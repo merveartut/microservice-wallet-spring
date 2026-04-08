@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  # Discovery Server (Eureka) için veritabanı gerekmez,
+  # ama ileride uygulamanın kendisini buraya ekleyeceğiz.
+
+  user-db:
+    image: postgres:15-alpine
+    container_name: user-db
+    environment:
+      POSTGRES_DB: user_db
+      POSTGRES_PASSWORD: password123
+    ports:
+      - "5431:5432"
+    volumes:
+      - user_data:/var/lib/postgresql/data
+
+  wallet-db:
+    image: postgres:15-alpine
+    container_name: wallet-db
+    environment:
+      POSTGRES_DB: wallet_db
+      POSTGRES_PASSWORD: password123
+    ports:
+      - "5432:5432"
+    volumes:
+      - wallet_data:/var/lib/postgresql/data
+
+volumes:
+  user_data:
+  wallet_data:
