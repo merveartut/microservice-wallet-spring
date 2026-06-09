@@ -1,17 +1,30 @@
-version: '3.8'
+# version: '3.8' <- Bu satırı silebilirsiniz (uyarıda dediği gibi obsolete)
+
+networks:
+  microservice-net:
+    driver: bridge
 
 services:
-  # Discovery Server (Eureka) için veritabanı gerekmez,
-  # ama ileride uygulamanın kendisini buraya ekleyeceğiz.
-
+  api-gateway:
+    build: ./api-gateway
+    container_name: api-gateway
+    ports:
+      - "8080:8080"
+    depends_on:
+      - service-registry
+    environment:
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://service-registry:8761/eureka
+    networks:
+      - microservice-net
   user-db:
     image: postgres:15-alpine
     container_name: user-db
     environment:
       POSTGRES_DB: user_db
+      POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password123
-    ports:
-      - "5431:5432"
+    networks:
+      - microservice-net
     volumes:
       - user_data:/var/lib/postgresql/data
 
@@ -20,11 +33,72 @@ services:
     container_name: wallet-db
     environment:
       POSTGRES_DB: wallet_db
+      POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password123
-    ports:
-      - "5432:5432"
+    networks:
+      - microservice-net
     volumes:
       - wallet_data:/var/lib/postgresql/data
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    networks:
+      - microservice-net
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    container_name: kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_LISTENERS: 'PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:9092'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Q' # Rastgele bir ID
+    networks:
+      - microservice-net
+
+  service-registry:
+    build: ./service-registry
+    ports:
+      - "8761:8761"
+    networks:
+      - microservice-net
+
+  user-service:
+    build: ./user-service
+    depends_on:
+      - user-db
+      - service-registry
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://user-db:5432/user_db
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: password123
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://service-registry:8761/eureka
+    networks:
+      - microservice-net
+
+  wallet-service:
+    build: ./wallet-service
+    depends_on:
+      - wallet-db
+      - service-registry
+      - kafka
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://wallet-db:5432/wallet_db
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: password123
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://service-registry:8761/eureka
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    networks:
+      - microservice-net
 
 volumes:
   user_data:

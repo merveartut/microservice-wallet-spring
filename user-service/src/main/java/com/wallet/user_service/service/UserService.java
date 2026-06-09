@@ -1,6 +1,7 @@
 package com.wallet.user_service.service;
 
 import com.wallet.user_service.entity.User;
+import com.wallet.user_service.messaging.UserProducer;
 import com.wallet.user_service.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -12,10 +13,15 @@ public class UserService {
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
+    private final UserProducer userProducer;
 
     public User createUser(User user) {
         user.setPassword(passwordEncoder.encode(user.getPassword()));
-        return userRepository.save(user);
+        User savedUser = userRepository.save(user);
+
+        userProducer.sendUserCreatedEvent(savedUser.getId(), savedUser.getEmail());
+
+        return savedUser;
     }
 
     public User findById(Long id) {

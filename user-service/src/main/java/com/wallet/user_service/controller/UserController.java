@@ -3,12 +3,12 @@ package com.wallet.user_service.controller;
 import com.wallet.user_service.dto.AuthRequest;
 import com.wallet.user_service.dto.UserRequest;
 import com.wallet.user_service.entity.User;
-import com.wallet.user_service.service.JwtService;
 import com.wallet.user_service.service.UserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
+import com.wallet.common.security.JwtService;
 
 @RestController
 @RequestMapping("/api/users")
@@ -34,7 +34,7 @@ public class UserController {
     }
 
     @GetMapping("/check/{id}")
-    public boolean checkUserExist(@PathVariable Long id) {
+    public boolean checkUserExist(@PathVariable("id") Long id) {
         return userService.existById(id);
     }
 
@@ -43,7 +43,7 @@ public class UserController {
         User user = userService.findByUsername(authRequest.username());
 
         if (passwordEncoder.matches(authRequest.password(), user.getPassword())) {
-            return jwtService.generateToken(authRequest.username());
+            return jwtService.generateToken(authRequest.username(), user.getId());
         } else {
             throw new RuntimeException("hatali parola girdiniz");
         }
