@@ -22,7 +22,16 @@ public class AuthConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         return http.csrf(csrf -> csrf.disable())
-                .authorizeHttpRequests(auth -> auth.anyRequest().permitAll())
+                .authorizeHttpRequests(auth -> auth
+                        // 1. Sadece register ve login endpoint'lerine herkes erişebilir
+                        .requestMatchers("/api/users/register", "/api/users/login").permitAll()
+                        // 2. Diğer tüm istekler için JWT doğrulaması şart
+                        .anyRequest().authenticated()
+                )
+                // 3. Stateless bir mimari (JWT) için Session management'ı kapatalım
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                // 4. JWT Filtresini, kullanıcı adı/şifre kontrol filtresinden önce çalıştır
+                .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
                 .build();
     }
 

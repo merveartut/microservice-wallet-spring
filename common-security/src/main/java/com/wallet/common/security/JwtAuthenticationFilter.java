@@ -19,14 +19,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
-            throws IOException, jakarta.servlet.ServletException { // <--- Buraya ekleyin
+            throws IOException, jakarta.servlet.ServletException {
         System.out.println("Filtre çalışıyor...");
         String authHeader = request.getHeader("Authorization");
         if (authHeader != null && authHeader.startsWith("Bearer ")) {
             String token = authHeader.substring(7);
             if (jwtService.validateToken(token)) {
                 Long userId = jwtService.extractUserId(token);
-                // SecurityContext'e kullanıcıyı set et
                 UsernamePasswordAuthenticationToken authToken =
                         new UsernamePasswordAuthenticationToken(userId, null, new ArrayList<>());
                 SecurityContextHolder.getContext().setAuthentication(authToken);
