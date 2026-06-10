@@ -25,7 +25,13 @@ public class UserController {
         user.setUsername(request.username());
         user.setPassword(request.password());
         user.setEmail(request.email());
-        return ResponseEntity.ok(userService.createUser(user));
+        try {
+            return ResponseEntity.ok(userService.createUser(user));
+        } catch (Exception e) {
+            // Hatanın tam olarak ne olduğunu loglara yazdır
+            e.printStackTrace();
+            return ResponseEntity.internalServerError().body(user);
+        }
     }
 
     @GetMapping("/{id}")

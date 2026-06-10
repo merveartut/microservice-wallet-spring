@@ -6,9 +6,11 @@ import com.wallet.user_service.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 @RequiredArgsConstructor
+@Transactional
 public class UserService {
 
     private final UserRepository userRepository;
@@ -16,12 +18,23 @@ public class UserService {
     private final UserProducer userProducer;
 
     public User createUser(User user) {
-        user.setPassword(passwordEncoder.encode(user.getPassword()));
-        User savedUser = userRepository.save(user);
+        try {
+            user.setPassword(passwordEncoder.encode(user.getPassword()));
+            User savedUser = userRepository.save(user);
 
-        userProducer.sendUserCreatedEvent(savedUser.getId(), savedUser.getEmail());
+            // Kafka gönderimini korumaya alalım
+            try {
+                userProducer.sendUserCreatedEvent(savedUser.getId(), savedUser.getEmail());
+            } catch (Exception e) {
+                System.err.println("Kafka mesajı gönderilemedi, ancak kullanıcı kaydedildi: " + e.getMessage());
+            }
 
-        return savedUser;
+            return savedUser;
+        } catch (Exception e) {
+            // Hatanın tam tipini ve mesajını loglara dökelim
+            e.printStackTrace();
+            throw e;
+        }
     }
 
     public User findById(Long id) {

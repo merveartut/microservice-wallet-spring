@@ -77,6 +77,7 @@ services:
     depends_on:
       - user-db
       - service-registry
+      - kafka
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://user-db:5432/user_db
       SPRING_DATASOURCE_USERNAME: postgres
