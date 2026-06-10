@@ -8,5 +8,5 @@ RUN mvn clean package -DskipTests
 FROM eclipse-temurin:21-jdk-alpine
 WORKDIR /app
 # 'build' aşamasındaki target klasöründen jar'ı kopyala
-COPY --from=build /app/target/*-SNAPSHOT.jar app.jar
+COPY --from=build /app/user-service/target/*-SNAPSHOT.jar app.jar
 ENTRYPOINT ["java", "-jar", "app.jar"]

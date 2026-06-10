@@ -66,14 +66,18 @@ services:
       - microservice-net
 
   service-registry:
-    build: ./service-registry
+    build:
+      context: .
+      dockerfile: service-registry/Dockerfile
     ports:
       - "8761:8761"
     networks:
       - microservice-net
 
   user-service:
-    build: ./user-service
+    build:
+      context: .
+      dockerfile: user-service/Dockerfile
     depends_on:
       - user-db
       - service-registry
@@ -87,7 +91,9 @@ services:
       - microservice-net
 
   wallet-service:
-    build: ./wallet-service
+    build:
+      context: .
+      dockerfile: wallet-service/Dockerfile
     depends_on:
       - wallet-db
       - service-registry
