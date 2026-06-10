@@ -1,12 +1,17 @@
-# 1. Aşama: Build (Derleme)
+# 1. Aşama: Build
 FROM maven:3.9.6-eclipse-temurin-21 AS build
 WORKDIR /app
-COPY . .
-RUN mvn clean package -DskipTests
 
-# 2. Aşama: Run (Çalıştırma)
+# Tüm projeyi kopyala (Parent POM dahil)
+COPY . .
+
+# Root dizininde tüm projeyi derle, böylece parent-child ilişkisi kurulur
+# -N (Non-recursive) değil, tam aksine tüm modülleri derliyoruz.
+RUN mvn clean install -DskipTests
+
+# 2. Aşama: Run (Burada servis ismini değiştireceksin)
 FROM eclipse-temurin:21-jdk-alpine
 WORKDIR /app
-# 'build' aşamasındaki target klasöründen jar'ı kopyala
-COPY --from=build /app/service-registry/target/*-SNAPSHOT.jar app.jar
+
+COPY --from=build service-registry/target/*-SNAPSHOT.jar app.jar
 ENTRYPOINT ["java", "-jar", "app.jar"]

@@ -2,19 +2,16 @@
 FROM maven:3.9.6-eclipse-temurin-21 AS build
 WORKDIR /app
 
-# 1. Tüm projeyi kopyala (Parent POM ve tüm modüller dahil)
+# Tüm projeyi kopyala (Parent POM dahil)
 COPY . .
 
-# 2. Sadece ilgili servisi derle
-# -pl (project list): Sadece api-gateway modülünü derle
-# -am (also make): Bu modülün bağımlı olduğu diğer modülleri (örn: common-security) de derle
-RUN mvn clean package -pl api-gateway -am -DskipTests
+# Root dizininde tüm projeyi derle, böylece parent-child ilişkisi kurulur
+# -N (Non-recursive) değil, tam aksine tüm modülleri derliyoruz.
+RUN mvn clean install -DskipTests
 
-# 2. Aşama: Run
+# 2. Aşama: Run (Burada servis ismini değiştireceksin)
 FROM eclipse-temurin:21-jdk-alpine
 WORKDIR /app
-
-# 3. Kopyalama yolunu 'api-gateway/' altından başlat
-COPY --from=build /app/api-gateway/target/*.jar app.jar
-
+# Örnek: api-gateway servisi için:
+COPY --from=build api-gateway/target/*-SNAPSHOT.jar app.jar
 ENTRYPOINT ["java", "-jar", "app.jar"]
