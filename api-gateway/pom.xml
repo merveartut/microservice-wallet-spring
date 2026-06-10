@@ -6,7 +6,7 @@
 		<groupId>com.wallet</groupId>
 		<artifactId>microservice-wallet-parent</artifactId>
 		<version>1.0.0</version>
-		<relativePath>../pom.xml</relativePath>
+		<relativePath> </relativePath>
 	</parent>
 
 	<artifactId>api-gateway</artifactId>
