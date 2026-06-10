@@ -1,7 +1,12 @@
-# 1. Aşama: Java 21 tabanlı bir imaj kullan
+# 1. Aşama: Build (Derleme)
+FROM maven:3.9.6-eclipse-temurin-21 AS build
+WORKDIR /app
+COPY . .
+RUN mvn clean package -DskipTests
+
+# 2. Aşama: Run (Çalıştırma)
 FROM eclipse-temurin:21-jdk-alpine
-# 2. Aşama: Build edilen jar dosyasını hedef dizine kopyala
-# (Önce projenizi 'mvn clean package' ile derlediğinizden emin olun)
-COPY target/api-gateway-0.0.1-SNAPSHOT.jar app.jar
-# 3. Aşama: Uygulamayı çalıştır
-ENTRYPOINT ["java","-jar","/app.jar"]
+WORKDIR /app
+# 'build' aşamasındaki target klasöründen jar'ı kopyala
+COPY --from=build target/api-gateway-0.0.1-SNAPSHOT.jar app.jar
+ENTRYPOINT ["java", "-jar", "app.jar"]
