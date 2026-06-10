@@ -2,15 +2,23 @@
 FROM maven:3.9.6-eclipse-temurin-21 AS build
 WORKDIR /app
 
-# Tüm projeyi kopyala (Parent POM dahil)
+# 1. Önce sadece ana pom.xml'i ve parent konfigürasyonunu kopyala
+COPY pom.xml .
+
+# 2. Sonra diğer her şeyi kopyala
 COPY . .
 
-# Root dizininde tüm projeyi derle, böylece parent-child ilişkisi kurulur
-# -N (Non-recursive) değil, tam aksine tüm modülleri derliyoruz.
-RUN mvn clean install -DskipTests
+# 3. ÖNCE PARENT PROJEYİ KUR (Install)
+# Bu komut 'microservice-wallet-parent'ı yerel Maven reposuna yükler.
+RUN mvn install -N -DskipTests
 
-# 2. Aşama: Run (Burada servis ismini değiştireceksin)
+# 4. ŞİMDİ SERVİSİ DERLE
+# Sadece ilgili servisi derle
+RUN mvn clean package -pl user-service -am -DskipTests
+
+# 2. Aşama: Run
 FROM eclipse-temurin:21-jdk-alpine
 WORKDIR /app
-COPY --from=build user-service/target/*-SNAPSHOT.jar app.jar
+# Burada servis ismini kendi servisine göre ayarla (örn: service-registry/)
+COPY --from=build /app/user-service/target/*-SNAPSHOT.jar app.jar
 ENTRYPOINT ["java", "-jar", "app.jar"]
