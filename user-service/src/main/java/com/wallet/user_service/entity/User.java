@@ -23,5 +23,5 @@ public class User {
 
     private String email;
 
-    private String role; // "ROLE_USER" veya "ROLE_ADMIN"
+    private String role;
 }

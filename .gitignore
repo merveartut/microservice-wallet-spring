@@ -2,6 +2,7 @@ target/
 .settings/
 .classpath
 .project
+.env
 !.mvn/wrapper/maven-wrapper.jar
 .vscode/
 .idea/

@@ -31,7 +31,6 @@ public class UserService {
 
             return savedUser;
         } catch (Exception e) {
-            // Hatanın tam tipini ve mesajını loglara dökelim
             e.printStackTrace();
             throw e;
         }
