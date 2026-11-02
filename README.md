@@ -30,8 +30,8 @@ Tüm istekler `API Gateway` (localhost:8080) üzerinden yapılmalıdır.
 
 **2. Cüzdan ve Hesap İşlemleri**
 - Hesap Durumu:
-`GET http://localhost:8080/api/account/details`<br>
-  _(JWT token gereklidir)_
+`GET http://localhost:8080/api/account/user/{userId}`<br>
+  _(JWT token gereklidir. `userId`, kayıt cevabındaki `id` değeridir; yalnızca token sahibi kendi hesabını görüntüleyebilir, aksi halde 403 döner.)_
 
 **3. Event-Driven Kontrolü**
 Bir kullanıcı kayıt olduğunda:
