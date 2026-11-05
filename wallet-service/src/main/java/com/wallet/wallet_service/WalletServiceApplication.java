@@ -9,7 +9,7 @@ import org.springframework.context.annotation.ComponentScan;
 @SpringBootApplication
 @EnableFeignClients
 @EnableDiscoveryClient
-@ComponentScan(basePackages = {"com.wallet.wallet_service", "com.wallet.common.security"})
+@ComponentScan(basePackages = {"com.wallet.wallet_service", "com.wallet.common"})
 
 public class WalletServiceApplication {
 

@@ -1,13 +1,19 @@
 package com.wallet.user_service.service;
 
+import com.wallet.common.exception.ConflictException;
+import com.wallet.common.exception.InvalidCredentialsException;
+import com.wallet.common.exception.ResourceNotFoundException;
+import com.wallet.user_service.dto.UserCreatedEvent;
 import com.wallet.user_service.entity.User;
-import com.wallet.user_service.messaging.UserProducer;
+import com.wallet.user_service.messaging.OutboxWriter;
 import com.wallet.user_service.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 @Transactional
@@ -15,37 +21,37 @@ public class UserService {
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
-    private final UserProducer userProducer;
+    private final OutboxWriter outboxWriter;
 
     public User createUser(User user) {
-        try {
-            user.setPassword(passwordEncoder.encode(user.getPassword()));
-            User savedUser = userRepository.save(user);
-
-            // Kafka gönderimini korumaya alalım
-            try {
-                userProducer.sendUserCreatedEvent(savedUser.getId(), savedUser.getEmail());
-            } catch (Exception e) {
-                System.err.println("Kafka mesajı gönderilemedi, ancak kullanıcı kaydedildi: " + e.getMessage());
-            }
-
-            return savedUser;
-        } catch (Exception e) {
-            e.printStackTrace();
-            throw e;
+        if (userRepository.existsByUsername(user.getUsername())) {
+            throw new ConflictException("USERNAME_ALREADY_EXISTS", "Bu kullanıcı adı zaten kullanılıyor");
         }
+        // Not: Kontrol ile kayıt arasında aynı adla eşzamanlı bir kayıt gelirse veritabanının UNIQUE kısıtı
+        // DataIntegrityViolationException fırlatır; GlobalExceptionHandler bunu da 409 olarak döner.
+
+        user.setPassword(passwordEncoder.encode(user.getPassword()));
+        User savedUser = userRepository.save(user);
+        outboxWriter.write("user-created-topic", savedUser.getId().toString(),
+                new UserCreatedEvent(savedUser.getId(), savedUser.getEmail()));
+
+        return savedUser;
     }
 
     public User findById(Long id) {
-        User user = userRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("User not found"));
-        return user;
+        return userRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Kullanıcı bulunamadı"));
     }
 
-    public User findByUsername(String username) {
-        User user = userRepository.findByUsername(username)
-                .orElseThrow(() -> new RuntimeException("User not found"));
-        return user;
+    /**
+     * Kullanıcı adı ve şifreyi doğrular. Kullanıcı yoksa da şifre yanlışsa da aynı hata döner;
+     * böylece hangi kullanıcı adlarının kayıtlı olduğu dışarıdan anlaşılamaz.
+     */
+    @Transactional(readOnly = true)
+    public User authenticate(String username, String rawPassword) {
+        return userRepository.findByUsername(username)
+                .filter(user -> passwordEncoder.matches(rawPassword, user.getPassword()))
+                .orElseThrow(InvalidCredentialsException::new);
     }
 
     public boolean existById(Long id) {
