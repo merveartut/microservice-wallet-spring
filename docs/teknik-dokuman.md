@@ -2,7 +2,7 @@
 
 Bu doküman, Microservice Wallet uygulamasının mimarisini, servislerin birbirleriyle nasıl çalıştığını, güvenlik modelini, hata yönetimini, veri modelini ve tüm REST endpoint'lerini anlatır. Endpoint davranışları ve hata kodları, çalışan sistem üzerinde test edilerek doğrulanmıştır.
 
-**Son güncelleme:** 2026-11-03. Güvenlik düzeltmeleri (yetkilendirme, rol sistemi, validation, kilitleme), global hata yönetimi ve Kafka consumer hata yönetimi (retry, DLT, idempotency) bu sürüme işlenmiştir. Kafka'ya yeni başlayanlar için: [Kafka Kılavuzu](kafka-kilavuzu.md). Yapılan değişikliklerin listesi için: [Değişiklik Kaydı](degisiklikler.md). Açık sorunlar için: [Yapılacaklar](yapilacaklar.md).
+**Son güncelleme:** 2026-11-05. Güvenlik düzeltmeleri (yetkilendirme, rol sistemi, validation, kilitleme), global hata yönetimi, Kafka consumer hata yönetimi (retry, DLT, idempotency), transactional outbox, UUID hesap numaraları ve ADMIN için tüm hesapları listeleme bu sürüme işlenmiştir. Arayüz ayrı bir repodadır: [wallet-frontend](https://github.com/merveartut/wallet-frontend). Kafka'ya yeni başlayanlar için: [Kafka Kılavuzu](kafka-kilavuzu.md). Yapılan değişikliklerin listesi için: [Değişiklik Kaydı](degisiklikler.md). Açık sorunlar için: [Yapılacaklar](yapilacaklar.md).
 
 ## İçindekiler
 
@@ -30,9 +30,10 @@ Uygulama mikroservis mimarisiyle kurulmuştur:
 - Dış dünyadan gelen tüm istekler tek bir **API Gateway** üzerinden girer.
 - Servisler birbirlerini **Eureka** üzerinden bulur.
 - Her servisin kendi **PostgreSQL** veritabanı vardır (database-per-service).
-- Kullanıcı kaydı sonrası cüzdan oluşturma, **Kafka** üzerinden asenkron olarak yapılır.
+- Kullanıcı kaydı sonrası cüzdan oluşturma, **Kafka** üzerinden asenkron olarak yapılır. Event'ler **transactional outbox** ile gönderilir.
 - Kimlik doğrulama ve rol bilgisi, ortak bir modüldeki **JWT** altyapısıyla taşınır.
 - Tüm hata cevapları **RFC 9457 Problem Details** (`application/problem+json`) formatındadır.
+- Web arayüzü ayrı bir projedir: [wallet-frontend](https://github.com/merveartut/wallet-frontend) (React + TypeScript + Vite). Gateway'e Vite dev proxy üzerinden bağlanır (bkz. [10.7](#107-frontend)).
 
 ## 2. Teknoloji Yığını
 
@@ -57,7 +58,7 @@ Uygulama mikroservis mimarisiyle kurulmuştur:
 
 ```mermaid
 flowchart LR
-    Client([İstemci])
+    Client(["İstemci<br/>(React frontend, curl)"])
 
     subgraph Docker["Docker network: microservice-net"]
         GW["API Gateway<br/>:8080"]
@@ -116,12 +117,12 @@ Proje, kök dizindeki `pom.xml`'de tanımlı bir Maven multi-module projesidir:
 microservice-wallet-spring/
 ├── pom.xml                 # Parent POM (sürüm yönetimi)
 ├── docker-compose.yml
-├── .env                    # JWT_SECRET (git'e girmez)
-├── docs/                   # Teknik doküman, değişiklik kaydı, yapılacaklar
+├── .env                    # JWT_SECRET (git'e girmemeli; şu an takip ediliyor, bkz. #35)
+├── docs/                   # Teknik doküman, değişiklik kaydı, yapılacaklar, Kafka kılavuzu
 ├── common-security/        # Ortak kütüphane: JWT + hata yönetimi (çalıştırılabilir değil)
 ├── service-registry/       # Eureka Server
 ├── api-gateway/            # Spring Cloud Gateway
-├── user-service/           # Kullanıcı yönetimi + Kafka producer
+├── user-service/           # Kullanıcı yönetimi + Kafka producer (outbox)
 └── wallet-service/         # Hesap yönetimi + Kafka consumer + Feign client
 ```
 
@@ -167,11 +168,12 @@ Spring Cloud Gateway (reaktif / WebFlux) tabanlıdır. Güvenlik konfigürasyonu
 
 Kullanıcı kaydı, girişi ve sorgulamasından sorumludur.
 
-- **Veritabanı:** `user_db` → `users` tablosu
+- **Veritabanı:** `user_db` → `users` ve `outbox_events` tabloları
 - **Şifreleme:** `BCryptPasswordEncoder`
 - **Rol:** Yeni kayıtlara sunucu tarafında `USER` rolü atanır. Rol istemciden alınmaz.
 - **Doğrulama:** Kayıt (`UserRequest`) ve giriş (`AuthRequest`) istekleri Bean Validation ile doğrulanır.
-- **Kafka:** Kayıt sonrası `user-created-topic`'e `UserCreatedEvent` gönderir. Kafka'ya gönderim hata verirse kullanıcı yine de kaydedilir, hata loglanır.
+- **Kafka (outbox):** Kayıt sırasında `UserCreatedEvent`, kullanıcıyla **aynı transaction'da** `outbox_events` tablosuna yazılır (`OutboxWriter`). `OutboxPublisher` her saniye bekleyen event'leri Kafka'ya gönderir. Kafka kapalıysa kayıt yine başarılı olur, event tabloda bekler ve Kafka açılınca gönderilir (bkz. [6.4](#64-outbox-producer-tarafı)).
+- **Zamanlanmış görevler:** `@EnableScheduling` açık; outbox gönderimi (1 sn) ve gönderilmiş kayıtların temizliği (saatte bir, 7 günden eskiler).
 - **Herkese açık endpoint'ler:** `/api/users/register`, `/api/users/login`. Diğerleri JWT ister.
 
 ### 4.5 wallet-service
@@ -181,9 +183,10 @@ Hesap (cüzdan) yönetimi, para yatırma ve transferden sorumludur.
 - **Veritabanı:** `wallet_db` → `accounts` tablosu
 - **Kafka:** `user-created-topic`'i `wallet-group` consumer group'u ile dinler ve yeni her kullanıcıya otomatik hesap açar. Hatalı mesajlar tekrar denenir, sonra `user-created-topic.DLT`'ye yazılır; tekrar gelen event ikinci hesap açmaz (bkz. [6.3](#63-hata-durumu)).
 - **Feign:** Manuel hesap açılışında kullanıcının varlığını `user-service`'e sorar (`GET /api/users/check/{id}`). `FeignConfig` sayesinde gelen isteğin `Authorization` header'ı bu çağrıya aynen eklenir (token propagation).
-- **Güvenlik:** Tüm endpoint'ler JWT ister. `POST /api/account/deposit` ayrıca ADMIN rolü ister.
+- **Güvenlik:** Tüm endpoint'ler JWT ister. `POST /api/account/deposit` ve `GET /api/account/accounts` ayrıca ADMIN rolü ister.
 - **Doğrulama:** Transfer isteği (`TransferRequest`) Bean Validation anotasyonlarıyla doğrulanır.
 - **Eşzamanlılık:** Bakiye değiştiren işlemler hesap satırlarını pessimistic lock ile kilitler (bkz. [8.8](#88-transfer)).
+- **Hesap numarası:** `Account` kaydedilmeden önce `@PrePersist` ile `ACC-<UUID>` olarak üretilir; veritabanında `uk_accounts_account_number` unique kısıtı vardır.
 
 ## 5. Kimlik Doğrulama ve Yetkilendirme
 
@@ -264,6 +267,7 @@ Rol yetkilendirmesi şu zincirle çalışır:
 | `POST /api/account/accounts` | Hesap her zaman token sahibine açılır; istemci `userId` gönderemez | `AccountController` |
 | `POST /api/account/transfer` | Kaynak hesabın sahibi == token'daki `userId` | `AccountService` |
 | `POST /api/account/deposit` | Sahiplik kontrolü yok; ADMIN rolü gerekir | `SecurityConfig` |
+| `GET /api/account/accounts` | Tüm hesaplar; ADMIN rolü gerekir | `SecurityConfig` |
 
 İhlallerde servis `AccessDeniedException` fırlatır; `GlobalExceptionHandler` bunu 403 Problem Details'e çevirir.
 
@@ -289,13 +293,21 @@ sequenceDiagram
     participant WDB as wallet-db
 
     C->>US: POST /api/users/register
+    rect rgba(127,127,127,0.1)
+    note over US,UDB: Tek transaction
     US->>UDB: INSERT users (şifre BCrypt, role=USER)
-    US->>K: send(user-created-topic, {userId, email})
+    US->>UDB: INSERT outbox_events (UserCreatedEvent JSON)
+    end
     US-->>C: 200 {id, username, email, role}
+    loop Her 1 sn (OutboxPublisher)
+    US->>UDB: Gönderilmemiş event'leri kilitle (SKIP LOCKED)
+    US->>K: send(user-created-topic, key=userId)
+    US->>UDB: published_at = now()
+    end
     K-->>WS: UserCreatedEvent
     WS->>WDB: userId için hesap var mı?
     alt Hesap yok
-        WS->>WDB: INSERT accounts<br/>(currency=TR, balance=10.00, ACC-<timestamp>)
+        WS->>WDB: INSERT accounts<br/>(currency=TR, balance=10.00, ACC-<UUID>)
     else Hesap var (tekrar gelen event)
         WS->>WS: Atla
     end
@@ -312,16 +324,16 @@ Kafka kavramlarının ve buradaki her ayarın ayrıntılı açıklaması için: 
 |---|---|
 | Topic | `user-created-topic` (1 partition; ilk mesajda otomatik oluşur) |
 | Dead letter topic | `user-created-topic.DLT` (1 partition; wallet-service açılışta oluşturur) |
-| Producer | user-service — `UserProducer` |
+| Producer | user-service — `OutboxWriter` (outbox'a yazar) + `OutboxPublisher` (Kafka'ya gönderir) |
 | Consumer | wallet-service — `UserConsumer`, group `wallet-group` |
-| Key | Yok (null) |
-| Value formatı | JSON. Producer: `JsonSerializer`. Consumer: `ErrorHandlingDeserializer` → `JsonDeserializer` |
+| Key | `userId` (String). Aynı kullanıcının event'leri aynı partition'a düşer |
+| Value formatı | JSON. Producer: `StringSerializer` (JSON outbox'ta hazır). Consumer: `ErrorHandlingDeserializer` → `JsonDeserializer` |
 | Varsayılan tip | `__TypeId__` header'ı yoksa `UserCreatedEvent` (`spring.json.value.default.type`) |
 | Payload | `{"userId": <Long>, "email": "<String>"}` |
 | Ack modu | `record`: her mesaj başarıyla işlenince (veya DLT'ye yazılınca) offset commit edilir |
 | Offset reset | `earliest` |
 
-`JsonSerializer`, mesaja `__TypeId__` header'ı olarak `com.wallet.user_service.dto.UserCreatedEvent` sınıf adını ekler. Consumer bu sınıfı aynı paket adıyla bulabilsin diye wallet-service'te de `com/wallet/user_service/dto/UserCreatedEvent.java` vardır. **İki taraftaki record'un paket adı ve alanları aynı tutulmalıdır.**
+`OutboxPublisher`, mesaja `__TypeId__` header'ı olarak outbox'taki `event_type` değerini (`com.wallet.user_service.dto.UserCreatedEvent`) ekler. Consumer bu sınıfı aynı paket adıyla bulabilsin diye wallet-service'te de `com/wallet/user_service/dto/UserCreatedEvent.java` vardır. **İki taraftaki record'un paket adı ve alanları aynı tutulmalıdır.**
 
 ### 6.3 Hata Durumu
 
@@ -338,9 +350,34 @@ DLT'deki mesajlar orijinal içeriği ve hatayı açıklayan `kafka_dlt-*` header
 
 **Idempotency kontrolünün sınırı:** Kullanıcının herhangi bir hesabı varsa event atlanır. Event gecikir ve kullanıcı bu arada elle hesap açarsa otomatik hesap açılmaz.
 
+### 6.4 Outbox (Producer Tarafı)
+
+Kullanıcı kaydı ile Kafka gönderimi tek bir işlem gibi davranmaz: biri başarılı olup diğeri başarısız olabilir. Bu yüzden event doğrudan Kafka'ya değil, kullanıcıyla aynı veritabanı transaction'ında `outbox_events` tablosuna yazılır. Veritabanı ikisini birlikte kaydeder ya da hiçbirini kaydetmez.
+
+| Bileşen | Görev |
+|---|---|
+| `OutboxWriter` | Event'i JSON'a çevirip `outbox_events`'e yazar. `@Transactional(propagation = MANDATORY)`: çağıranın transaction'ı yoksa hata verir |
+| `OutboxPublisher.publishPending()` | `@Scheduled` (1 sn). En eski 100 gönderilmemiş kaydı `FOR UPDATE SKIP LOCKED` ile kilitler, `id` sırasıyla Kafka'ya gönderir (`send().get(10 sn)`), başarılı olanların `published_at`'ini doldurur. Bir gönderim başarısız olursa sırayı korumak için durur; kalanlar sonraki turda denenir |
+| `OutboxPublisher.deleteOldPublished()` | `@Scheduled` (saatte bir). 7 günden eski gönderilmiş kayıtları siler |
+
+| Durum | Davranış |
+|---|---|
+| Kafka kapalıyken kayıt | Kayıt 200 döner; event `published_at = NULL` olarak bekler. Publisher ~5 sn'de bir dener (`max.block.ms=5000`) ve uyarı loglar |
+| Kafka açılınca | Bekleyen event'ler sırayla gönderilir |
+| Kayıt reddedilirse (ör. 409) | Transaction geri alınır; outbox'a satır yazılmaz |
+| Gönderildi ama `published_at` commit edilmeden çökme | Event tekrar gönderilir (at-least-once). Consumer idempotent olduğu için ikinci hesap açılmaz |
+| Birden fazla user-service instance | `SKIP LOCKED` sayesinde aynı satırı iki instance birden göndermez |
+
+Bekleyen event'leri görmek için:
+
+```bash
+docker exec user-db psql -U postgres -d user_db \
+  -c "SELECT id, message_key, created_at, published_at FROM outbox_events ORDER BY id DESC LIMIT 10;"
+```
+
 ## 7. Veri Modeli
 
-Tablolar Hibernate tarafından otomatik oluşturulur (`ddl-auto=update`).
+Tablolar Hibernate tarafından otomatik oluşturulur (`ddl-auto=update`). Not: `ddl-auto=update` yeni tablo, kolon ve isimli unique kısıt ekler; var olan kolonun tipini veya `NOT NULL` durumunu değiştirmez.
 
 ### 7.1 `user_db.users`
 
@@ -359,12 +396,26 @@ Rol sisteminden önce oluşturulmuş kayıtlarda `role` `null` olabilir. Bu kay�
 | Kolon | Tip | Kısıt | Açıklama |
 |---|---|---|---|
 | `id` | bigserial | PK | |
-| `account_number` | varchar(255) | — | `ACC-<epoch millis>` biçiminde. Entity'de `@Column(unique = true, nullable = false)` var, ancak mevcut veritabanında kısıt oluşmadı (bkz. #9). |
+| `account_number` | varchar(255) | UNIQUE (`uk_accounts_account_number`) | Yeni hesaplarda `ACC-<UUID>` (`@PrePersist` ile üretilir, sonradan değiştirilemez). Eski hesaplarda `ACC-<epoch millis>`. |
 | `currency` | varchar(255) | — | Serbest metin (otomatik hesaplarda `TR`) |
 | `balance` | numeric(38,2) | — | Açılış bakiyesi `10.00` |
 | `user_id` | bigint | — | `users.id`'ye mantıksal referans. Servisler ayrı veritabanında olduğu için foreign key yok. |
 
 Bir kullanıcının birden fazla hesabı olabilir.
+
+### 7.3 `user_db.outbox_events`
+
+| Kolon | Tip | Kısıt | Açıklama |
+|---|---|---|---|
+| `id` | bigserial | PK | Gönderim sırası |
+| `topic` | varchar(255) | NOT NULL | Hedef Kafka topic'i |
+| `message_key` | varchar(255) | | Kafka key'i (`userId`) |
+| `event_type` | varchar(255) | NOT NULL | Event sınıfının tam adı; `__TypeId__` header'ı olarak gönderilir |
+| `payload` | text | NOT NULL | Event'in JSON hali |
+| `created_at` | timestamp | NOT NULL | |
+| `published_at` | timestamp | | `NULL` ise henüz gönderilmedi |
+
+Index: `ix_outbox_events_unpublished (published_at, id)`. Ayrıntı: [6.4](#64-outbox-producer-tarafı).
 
 ## 8. API Referansı
 
@@ -386,6 +437,7 @@ Bir kullanıcının birden fazla hesabı olabilir.
 | 6 | POST | `/api/account/accounts` | 🔒 kendine | wallet-service |
 | 7 | POST | `/api/account/deposit` | 👑 | wallet-service |
 | 8 | POST | `/api/account/transfer` | 🔒 kendi hesabından | wallet-service |
+| 9 | GET | `/api/account/accounts` | 👑 | wallet-service |
 
 ---
 
@@ -527,7 +579,7 @@ Hesabın sahibi token'daki `userId`'den alınır. İstekte `userId` parametresi 
 
 | Kod | `errorCode` | Durum |
 |---|---|---|
-| 200 | — | `Hesap başarılı bir şekilde oluşturuldu. Hesap no: ACC-...` (`text/plain`) |
+| 200 | — | `Hesap başarılı bir şekilde oluşturuldu. Hesap no: ACC-<UUID>` (`text/plain`) |
 | 400 | `INVALID_REQUEST` | `currency` parametresi yok |
 | 404 | `RESOURCE_NOT_FOUND` | Token sahibi user-service'te yok |
 | 500 | `INTERNAL_ERROR` | user-service'e ulaşılamadı (Feign hatası) |
@@ -611,6 +663,34 @@ curl -X POST http://localhost:8080/api/account/transfer \
 ```
 
 **Eşzamanlılık testi sonucu:** 11.00 bakiyeli bir hesaptan aynı anda 20 adet 1.00'lik transfer gönderildiğinde tam olarak 11 işlem başarılı oldu, 9'u yetersiz bakiye ile reddedildi, kaynak bakiye `0.00`'a indi ve toplam bakiye korundu. Loglarda deadlock görülmedi.
+
+---
+
+### 8.9 Tüm Hesapları Listele
+
+`GET /api/account/accounts` 👑 ADMIN
+
+Sistemdeki tüm hesapları `id` sırasıyla döner. Frontend'deki para yatırma ekranının hesap seçicisi bu endpoint'i kullanır. Aynı yoldaki `POST` (hesap açma) bu kuraldan etkilenmez.
+
+**Cevaplar:**
+
+| Kod | `errorCode` | Durum |
+|---|---|---|
+| 200 | — | Hesap dizisi |
+| 403 | `ACCESS_DENIED` | Token ADMIN rolü taşımıyor |
+
+```json
+[
+  {"id":29,"accountNumber":"ACC-1793800349646","currency":"TR","balance":110.25,"userId":25},
+  {"id":31,"accountNumber":"ACC-1793800899352","currency":"TRY","balance":10.00,"userId":26}
+]
+```
+
+```bash
+curl http://localhost:8080/api/account/accounts -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+Sayfalama yoktur; tüm hesaplar tek cevapta döner. Hesap sayısı çok artarsa sayfalama ve sunucu tarafında arama eklenmelidir.
 
 ## 9. Hata Yönetimi
 
@@ -746,7 +826,7 @@ IntelliJ'de projeyi açarken SDK ve language level olarak **21** seçilmelidir.
 
 ### 10.2 Ortam Değişkeni
 
-Kök dizine `.env` dosyası oluşturun (git'e eklenmez):
+Kök dizine `.env` dosyası oluşturun. Bu dosya git'e eklenmemelidir; `.gitignore`'da olmasına rağmen eski bir commit'te eklendiği için şu an takip ediliyor (bkz. #35):
 
 ```dotenv
 JWT_SECRET=<base64 kodlu, en az 32 byte'lık rastgele anahtar>
@@ -831,6 +911,19 @@ curl -s $B/api/account/user/<ID> -H "Authorization: Bearer $TOKEN"
 | `docker compose down -v` | Sistemi durdurup veritabanı verilerini silme |
 | `mvn clean install -DskipTests` | Yerel build (JDK 21 ile) |
 
+### 10.7 Frontend
+
+Arayüz ayrı bir repodadır: [merveartut/wallet-frontend](https://github.com/merveartut/wallet-frontend). Backend ayaktayken:
+
+```bash
+git clone https://github.com/merveartut/wallet-frontend.git
+cd wallet-frontend
+npm install
+npm run dev        # http://localhost:5173
+```
+
+Vite dev sunucusu `/api` isteklerini `http://localhost:8080`'e (gateway) aktarır; tarayıcı aynı adrese istek attığı için gateway'de CORS ayarı gerekmez. Ayrıntılar frontend reposunun README'sinde.
+
 ## 11. Konfigürasyon
 
 ### 11.1 Ortam Değişkenleri
@@ -846,6 +939,8 @@ curl -s $B/api/account/user/<ID> -H "Authorization: Bearer $TOKEN"
 
 user-service, Kafka adresini properties dosyasında sabit olarak `kafka:9092` şeklinde tanımlar.
 
+> ⚠️ user-service'in `application.properties` dosyası satır sonu olmadan bitiyor. Dosyanın sonuna ekleme yaparken önce yeni satır açın; aksi halde yeni ayar son satıra yapışır ve etkisiz kalır.
+
 ### 11.2 Önemli Uygulama Ayarları
 
 | Ayar | Değer | Servis |
@@ -853,28 +948,36 @@ user-service, Kafka adresini properties dosyasında sabit olarak `kafka:9092` ş
 | `spring.jpa.hibernate.ddl-auto` | `update` | user, wallet |
 | `spring.jpa.show-sql` | `true` | user, wallet |
 | `spring.cloud.openfeign...connect-timeout` / `read-timeout` | 5000 ms | wallet |
-| `spring.kafka.listener.ack-mode` | `manual_immediate` | wallet |
+| `spring.kafka.listener.ack-mode` | `record` | wallet |
+| `spring.kafka.consumer.value-deserializer` | `ErrorHandlingDeserializer` (delegate: `JsonDeserializer`) | wallet |
+| `spring.kafka.producer.value-serializer` | `StringSerializer` (outbox JSON'u olduğu gibi gönderilir) | user |
+| `spring.kafka.producer.acks` | `all` | user |
+| `spring.kafka.producer.properties.max.block.ms` | `5000` (Kafka kapalıyken `send()` 60 sn yerine 5 sn bloklanır) | user |
+| `outbox.publish-interval-ms` / `outbox.cleanup-interval-ms` | `1000` / `3600000` (kodda varsayılan) | user |
 | `spring.kafka.consumer.properties.spring.json.trusted.packages` | `*` | wallet |
 | `logging.level.org.springframework.security` | `DEBUG` | user |
 
 ## 12. Bilinen Sorunlar
 
-Bu bölüm, kodun 2026-11-03 tarihli haline ve çalışan sistem üzerinde yapılan testlere dayanır. Takip listesi için: [Yapılacaklar](yapilacaklar.md).
+Bu bölüm, kodun 2026-11-05 tarihli haline ve çalışan sistem üzerinde yapılan testlere dayanır. Takip listesi için: [Yapılacaklar](yapilacaklar.md).
 
-Kritik ve yüksek öncelikte açık sorun kalmamıştır.
+### 12.1 Açık — Kritik ve Yüksek
 
-### 12.1 Açık — Orta
+| # | Öncelik | Sorun | Çözüm |
+|---|---|---|---|
+| 35 | 🔴 Kritik | `.env` `.gitignore`'da olmasına rağmen git tarafından takip ediliyor (`729e7ae`); `JWT_SECRET` GitHub'daki repoda görünüyor. Anahtarı bilen biri istediği kullanıcı ve ADMIN rolüyle geçerli token üretebilir. | `git rm --cached .env` ile takipten çıkarmak **ve** anahtarı değiştirmek (eski anahtar git geçmişinde kalır). |
+| 34 | 🟠 Yüksek | Farklı para birimindeki hesaplar arasında transfer kur dönüşümü yapmadan gerçekleşiyor: TRY hesabından USD hesabına 2,50 gönderilince USD hesabı 2,50 dolar artıyor. | Farklı para birimleri arasında transferi reddetmek (`BusinessRuleException`, 422) veya kur dönüşümü eklemek. |
+
+### 12.2 Açık — Orta
 
 | # | Sorun | Çözüm |
 |---|---|---|
-| 9 | Hesap numarası `ACC-<epoch millis>`; aynı milisaniyede çakışabilir. Entity'ye `@Column(unique = true)` eklendi, ancak Hibernate 6 `ddl-auto=update` tek kolonluk `unique`'i mevcut tabloya eklemiyor; veritabanında kısıt yok. | Numara üretimini UUID / sequence yapmak; kısıtı `@Table(uniqueConstraints = ...)` ile ya da SQL ile eklemek. |
-| 12 | Kafka gönderimi DB transaction'ı ile atomik değil. Mesaj gönderilemezse kullanıcı cüzdansız kalır. | Transactional outbox pattern. |
 | 14 | Postgres şifreleri compose dosyasında açık metin. | `.env`'e taşımak. |
 | 15 | `depends_on` healthcheck kullanmıyor; servisler DB/Kafka hazır olmadan açılabilir. | `healthcheck` + `condition: service_healthy`. |
 | 16 | `spring.json.trusted.packages=*` | Yalnızca event paketine izin vermek. |
 | 30 | user-service'e ulaşılamadığında hesap açma 500 `INTERNAL_ERROR` dönüyor; gateway hataları (503) Problem Details formatında değil. | wallet-service'te `FeignException` → 503 `SERVICE_UNAVAILABLE`; gateway'e WebFlux hata yöneticisi. |
 
-### 12.2 Açık — Düşük
+### 12.3 Açık — Düşük
 
 | # | Sorun | Çözüm |
 |---|---|---|
@@ -889,6 +992,6 @@ Kritik ve yüksek öncelikte açık sorun kalmamıştır.
 | 31 | Transfer'de olmayan kaynak hesap 404, başkasına ait kaynak hesap 403 dönüyor; hesap numaralarının varlığı tahmin edilebilir. | Kaynak hesap için iki durumda da 403 dönmek. |
 | 33 | DLT'deki mesajlar için alarm ve yeniden işleme mekanizması yok. | DLT lag izleme; DLT'den ana topic'e yeniden gönderme aracı. |
 
-### 12.3 Çözülenler
+### 12.4 Çözülenler
 
-[Değişiklik Kaydı](degisiklikler.md)'nda ayrıntılı olarak listelenmiştir: #1–#8, #10, #11, #13, #21, #25–#28.
+[Değişiklik Kaydı](degisiklikler.md)'nda ayrıntılı olarak listelenmiştir: #1–#13, #21, #25–#28.

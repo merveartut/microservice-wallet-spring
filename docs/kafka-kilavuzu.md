@@ -2,7 +2,7 @@
 
 Bu kılavuz, Kafka deneyimi olmayan bir geliştiricinin projedeki Kafka kodunu okuyup anlayabilmesi ve değiştirebilmesi için yazıldı. Önce temel kavramlar, sonra projede nasıl kullanıldığı, en sonda da hata yönetimi (retry, DLT, idempotency) anlatılıyor. Her ayarın **neden** orada olduğu açıklanıyor.
 
-**Son güncelleme:** 2026-11-03 (#11 düzeltmesiyle birlikte). İlgili dokümanlar: [Teknik Doküman — Bölüm 6](teknik-dokuman.md#6-event-driven-akış-kafka), [Yapılacaklar](yapilacaklar.md).
+**Son güncelleme:** 2026-11-05 (#11 consumer hata yönetimi ve #12 transactional outbox ile birlikte). İlgili dokümanlar: [Teknik Doküman — Bölüm 6](teknik-dokuman.md#6-event-driven-akış-kafka), [Yapılacaklar](yapilacaklar.md).
 
 ## İçindekiler
 
@@ -19,9 +19,10 @@ Bu kılavuz, Kafka deneyimi olmayan bir geliştiricinin projedeki Kafka kodunu o
 11. [Bir Mesajın Yolculuğu: Dört Senaryo](#11-bir-mesajın-yolculuğu-dört-senaryo)
 12. [Komut Kopya Kağıdı](#12-komut-kopya-kağıdı)
 13. [Sık Yapılan Hatalar](#13-sık-yapılan-hatalar)
-14. [Açık Kalan Konular](#14-açık-kalan-konular)
-15. [Sözlük](#15-sözlük)
-16. [Kendinizi Test Edin](#16-kendinizi-test-edin)
+14. [Outbox: Mesajı Göndermeyi Garanti Etmek](#14-outbox-mesajı-göndermeyi-garanti-etmek)
+15. [Açık Kalan Konular](#15-açık-kalan-konular)
+16. [Sözlük](#16-sözlük)
+17. [Kendinizi Test Edin](#17-kendinizi-test-edin)
 
 ---
 
@@ -62,7 +63,7 @@ flowchart LR
 | **Topic** | Mesajların yazıldığı isimli kanal. Veritabanındaki tabloya benzer, ama yalnızca sonuna eklenebilir. | `user-created-topic`, `user-created-topic.DLT` |
 | **Partition** | Bir topic'in parçası. Paralellik için topic birden fazla partition'a bölünebilir. Sıra garantisi yalnızca **bir partition içinde** vardır. | Her topic'te 1 partition |
 | **Offset** | Bir mesajın partition içindeki sıra numarası (0, 1, 2…). Hiç değişmez. | Kayıt sayısı arttıkça büyür |
-| **Producer** | Topic'e mesaj yazan uygulama. | user-service → `UserProducer` |
+| **Producer** | Topic'e mesaj yazan uygulama. | user-service → `OutboxPublisher` (outbox üzerinden, [Bölüm 14](#14-outbox-mesajı-göndermeyi-garanti-etmek)) |
 | **Consumer** | Topic'ten mesaj okuyan uygulama. | wallet-service → `UserConsumer` |
 | **Consumer group** | Aynı işi yapan consumer'ların ortak adı. Kafka, her grubun "nereye kadar okuduğunu" ayrı tutar. Bir mesajı bir grup içinde yalnızca bir consumer işler. | `wallet-group` |
 | **Committed offset** | Bir grubun "buraya kadar işledim" diye Kafka'ya kaydettiği konum. Consumer yeniden başlarsa buradan devam eder. | [Bölüm 5](#5-offset-commit-bu-mesajı-işledim-demek) |
@@ -88,9 +89,9 @@ sequenceDiagram
     participant DB as wallet-db
 
     C->>US: POST /api/users/register
-    US->>US: Kullanıcıyı user_db'ye kaydet
-    US->>K: UserCreatedEvent {userId, email}
+    US->>US: Tek transaction: kullanıcıyı ve event'i (outbox) kaydet
     US-->>C: 200 (hesap henüz açılmamış olabilir)
+    US->>K: OutboxPublisher (≤1 sn sonra): UserCreatedEvent, key=userId
     K-->>WS: Mesajı teslim et
     WS->>DB: userId için hesap var mı?
     alt Hesap yok
@@ -106,7 +107,8 @@ sequenceDiagram
 | Dosya | Servis | Görevi |
 |---|---|---|
 | [`UserCreatedEvent.java`](../user-service/src/main/java/com/wallet/user_service/dto/UserCreatedEvent.java) | user-service | Mesajın içeriği: `record UserCreatedEvent(Long userId, String email)` |
-| [`UserProducer.java`](../user-service/src/main/java/com/wallet/user_service/messaging/UserProducer.java) | user-service | `kafkaTemplate.send("user-created-topic", event)` ile mesajı gönderir |
+| [`OutboxWriter.java`](../user-service/src/main/java/com/wallet/user_service/messaging/OutboxWriter.java) | user-service | Event'i kullanıcıyla aynı transaction'da `outbox_events` tablosuna yazar |
+| [`OutboxPublisher.java`](../user-service/src/main/java/com/wallet/user_service/messaging/OutboxPublisher.java) | user-service | Her saniye bekleyen event'leri Kafka'ya gönderir ([Bölüm 14](#14-outbox-mesajı-göndermeyi-garanti-etmek)) |
 | [`application.properties`](../user-service/src/main/resources/application.properties) | user-service | Producer ayarları: bağlantı adresi, serializer'lar |
 | [`UserCreatedEvent.java`](../wallet-service/src/main/java/com/wallet/user_service/dto/UserCreatedEvent.java) | wallet-service | Mesaj sınıfının **aynı paket adıyla** kopyası ([Bölüm 4](#4-mesajın-bytea-dönüşmesi-serileştirme)) |
 | [`UserConsumer.java`](../wallet-service/src/main/java/com/wallet/wallet_service/messaging/UserConsumer.java) | wallet-service | `@KafkaListener` ile mesajı okur, hesabı açar |
@@ -128,18 +130,21 @@ Kafka yalnızca byte dizisi saklar; Java nesnesinden haberi yoktur. Bu yüzden:
 - **Producer** nesneyi byte'a çevirir (**serializer**).
 - **Consumer** byte'ı nesneye çevirir (**deserializer**).
 
-Her mesajın bir **key**'i ve bir **value**'su vardır; her ikisi için ayrı ayar yapılır. Bu projede key kullanılmıyor (`null`), value JSON.
+Her mesajın bir **key**'i ve bir **value**'su vardır; her ikisi için ayrı ayar yapılır. Bu projede key `userId` (String), value JSON.
 
 ### 4.1 Producer tarafı (user-service)
 
 ```properties
 spring.kafka.producer.key-serializer=org.apache.kafka.common.serialization.StringSerializer
-spring.kafka.producer.value-serializer=org.springframework.kafka.support.serializer.JsonSerializer
+spring.kafka.producer.value-serializer=org.apache.kafka.common.serialization.StringSerializer
 ```
 
-`JsonSerializer` nesneyi JSON'a çevirir ve mesaja bir **header** ekler:
+Event, outbox tablosuna yazılırken JSON'a çevrilir (`OutboxWriter`, Jackson `ObjectMapper`). Kafka'ya gönderilirken JSON hazır olduğu için value olduğu gibi, **`StringSerializer`** ile yazılır. `JsonSerializer` kullanılsaydı hazır JSON metnini bir kez daha JSON'a çevirip tırnak içine alırdı (`"{\"userId\":...}"`) ve consumer çözemezdi.
+
+`OutboxPublisher`, mesaja bir **header** ekler:
 
 ```
+key        : 21
 __TypeId__ : com.wallet.user_service.dto.UserCreatedEvent
 value      : {"userId":21,"email":"ali@x.com"}
 ```
@@ -233,7 +238,7 @@ if (accountRepository.existsByUserId(event.userId())) {
 
 **Bu kontrolün sınırı:** Kullanıcının **herhangi bir** hesabı varsa event atlanır. Kafka uzun süre gecikirse ve kullanıcı bu arada elle hesap açarsa, otomatik hesabı açılmaz. Daha katı çözüm, her event'e benzersiz bir `eventId` verip işlenen id'leri bir tabloda tutmaktır (**inbox pattern**). Bu projenin boyutunda `userId` kontrolü yeterli görüldü.
 
-**Yarış durumu neden yok:** Topic'in tek partition'ı var ve onu tek consumer okuyor. Aynı event'in iki kopyası aynı anda değil, sırayla işlenir. Partition veya consumer sayısı artırılırsa, aynı `userId`'li mesajların aynı partition'a düşmesi için mesaja `userId` key olarak verilmeli. Ek güvenlik için veritabanında da kısıt düşünülebilir.
+**Yarış durumu neden yok:** Topic'in tek partition'ı var ve onu tek consumer okuyor. Aynı event'in iki kopyası aynı anda değil, sırayla işlenir. Partition veya consumer sayısı artırılsa bile mesajların key'i `userId` olduğu için aynı kullanıcının mesajları aynı partition'a, sırayla düşer. Ek güvenlik için veritabanında da kısıt düşünülebilir.
 
 ## 7. Hatalar: Geçici, Kalıcı ve Zehirli Mesaj
 
@@ -380,7 +385,7 @@ Grubun **hiç commit edilmiş offset'i yoksa** nereden başlanacağı. `earliest
 ```properties
 spring.kafka.consumer.key-deserializer=org.apache.kafka.common.serialization.StringDeserializer
 ```
-Key'i String olarak çöz. Bizde key `null`, ama ayarın tanımlı olması gerekir.
+Key'i String olarak çöz (bizde `userId`).
 
 ```properties
 spring.kafka.consumer.value-deserializer=org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
@@ -559,18 +564,76 @@ docker compose logs -f wallet-service | grep -E "UserConsumer|partitions assigne
 | Listener'da uzun süren iş (dakikalar) | `max.poll.interval.ms` aşılır, Kafka mesajı başka consumer'a verir, iş iki kez yapılır | İşi kısa tut ya da ayarı artır |
 | `auto-offset-reset`'in her açılışta geçerli olduğunu sanmak | Beklenmeyen davranış | Yalnızca commit edilmiş offset'i olmayan gruplar için geçerli |
 
-## 14. Açık Kalan Konular
+## 14. Outbox: Mesajı Göndermeyi Garanti Etmek
+
+Şimdiye kadar anlatılanlar **consumer** tarafındaydı: mesaj Kafka'ya ulaştıktan sonra kaybolmasın, tekrar gelirse zarar vermesin. Peki mesaj Kafka'ya **hiç ulaşamazsa**?
+
+### 14.1 Sorun: iki ayrı sistem, tek işlem
+
+Kayıt sırasında iki şey olmalı: kullanıcı `user_db`'ye yazılmalı ve Kafka'ya "kullanıcı oluştu" mesajı gitmeli. Bunlar iki ayrı sistemdir; ikisini tek bir transaction'da birleştirmenin basit bir yolu yoktur.
+
+| Ne olur | Sonuç |
+|---|---|
+| Kullanıcı kaydedildi, Kafka o an kapalı | Mesaj gitmez, kullanıcı **cüzdansız** kalır. DLT yardım edemez: mesaj Kafka'ya hiç ulaşmadı |
+| Mesaj gönderildi, sonra veritabanı commit'i başarısız oldu | Var olmayan bir kullanıcıya **cüzdan açılır** |
+
+Eski kodda ikisi de mümkündü. Üstelik `kafkaTemplate.send()` asenkron olduğu için çevresindeki `try/catch` gönderim hatasını yakalayamıyordu: hata sessizce kayboluyordu.
+
+### 14.2 Çözüm: önce kendi veritabanına yaz
+
+**Transactional outbox** fikri basittir: Kafka'ya doğrudan gönderme. Mesajı, kullanıcıyla **aynı veritabanı transaction'ında** bir tabloya (`outbox_events`) yaz. Veritabanı ikisini birlikte kaydeder ya da hiçbirini kaydetmez. Ardından ayrı bir görev tabloyu okuyup Kafka'ya gönderir.
+
+```mermaid
+flowchart LR
+    R["POST /register"] --> TX
+    subgraph TX["Tek DB transaction"]
+        U["INSERT users"] --> O["INSERT outbox_events<br/>(published_at = NULL)"]
+    end
+    TX --> P["OutboxPublisher<br/>her 1 sn"]
+    P -->|"send + 'aldım' bekle"| K{{"Kafka"}}
+    P -->|"published_at = now()"| DB[("outbox_events")]
+```
+
+| Bileşen | Görev |
+|---|---|
+| `OutboxWriter.write(topic, key, event)` | Event'i JSON'a çevirip tabloya yazar. `propagation = MANDATORY`: transaction yoksa hata verir, çünkü outbox'ın tek anlamı iş verisiyle aynı transaction'da olmaktır |
+| `OutboxPublisher.publishPending()` | Her saniye en eski 100 bekleyen kaydı alır, sırayla gönderir, Kafka "aldım" deyince (`send().get()`) `published_at`'i doldurur |
+| `OutboxPublisher.deleteOldPublished()` | Saatte bir, 7 günden eski gönderilmiş kayıtları siler |
+
+### 14.3 Neden böyle tasarlandı?
+
+- **Önce gönder, sonra işaretle → at-least-once.** Mesaj gönderilip `published_at` kaydedilmeden uygulama çökerse mesaj bir daha gönderilir. Tekrar, kayıptan iyidir; consumer idempotent olduğu için ([6.3](#63-idempotency)) zarar vermez. **Outbox mesajın gitmesini, idempotent consumer tekrarın zararsız olmasını, DLT de gelen mesajın kaybolmamasını sağlar.** Üçü birlikte uçtan uca güvenilirlik verir.
+- **Sıra korunur.** Bir mesaj gönderilemezse döngü durur (`break`); sonraki mesajlar onu geçmez.
+- **`FOR UPDATE SKIP LOCKED`.** user-service'in birden fazla kopyası çalışırsa, bir kopyanın o anda gönderdiği satırları diğeri atlar; aynı mesaj iki kez gönderilmez.
+- **`max.block.ms=5000`.** Kafka kapalıyken `send()` varsayılan olarak metadata için **60 saniye** bekler; bu sürede publisher'ın veritabanı transaction'ı da açık kalır. 5 saniye, hızlı hata verip bir sonraki turda tekrar denemesini sağlar. (Bu sorun testte yakalandı.)
+- **`acks=all`.** Kafka mesajı tüm kopyalara yazmadan "aldım" demez; "gönderildi" olarak işaretlenen mesaj gerçekten kalıcıdır.
+- **Polling yerine CDC?** Büyük sistemlerde tabloyu sorgulamak yerine veritabanının değişiklik günlüğünü okuyan **CDC** (Change Data Capture, ör. Debezium) kullanılır. Bu proje için ~1 sn gecikmeli polling yeterli ve çok daha basit.
+
+### 14.4 İzleme
+
+```bash
+# Bekleyen (gönderilmemiş) event'ler
+docker exec user-db psql -U postgres -d user_db \
+  -c "SELECT id, message_key, created_at FROM outbox_events WHERE published_at IS NULL ORDER BY id;"
+
+# Kafka kapalıyken davranışı görmek için
+docker compose stop kafka      # kayıt olun → 200 döner, satır bekler
+docker compose logs -f user-service | grep Outbox
+docker compose start kafka     # birkaç saniye içinde gönderilir, cüzdan açılır
+```
+
+Bekleyen satır sayısı sürekli artıyorsa Kafka'ya ulaşılamıyor demektir.
+
+## 15. Açık Kalan Konular
 
 | # | Konu | Açıklama |
 |---|---|---|
-| 12 | Producer tarafı atomik değil | user-service kullanıcıyı veritabanına kaydedip **sonra** Kafka'ya mesaj gönderiyor. Bu ikisi arasında hata olursa kullanıcı kayıtlı ama mesaj hiç gönderilmemiş olur; DLT bunu kurtaramaz çünkü mesaj Kafka'ya hiç ulaşmamıştır. Çözüm: **transactional outbox**. Mesaj, kullanıcıyla aynı veritabanı transaction'ında bir `outbox` tablosuna yazılır; ayrı bir süreç bu tabloyu okuyup Kafka'ya gönderir. |
 | 16 | `trusted.packages=*` | Yalnızca `com.wallet.user_service.dto` paketine izin verilmeli. |
 | 33 | DLT izleme ve yeniden işleme | DLT'de mesaj biriktiğinde alarm yok; mesajlar elle ana topic'e geri gönderiliyor. |
-| — | Mesaj key'i yok | Şu an tek partition olduğu için sorun değil. Partition artırılırsa `userId` key olarak verilmeli ([6.3](#63-idempotency)). |
 | 18 | `cp-kafka:latest` | Sürüm sabitlenmeli. |
 | 24 | Test yok | Testcontainers ile gerçek bir Kafka'ya karşı consumer testleri yazılabilir. |
 
-## 15. Sözlük
+## 16. Sözlük
 
 | Terim | Anlamı |
 |---|---|
@@ -598,7 +661,7 @@ docker compose logs -f wallet-service | grep -E "UserConsumer|partitions assigne
 | Serialization | Nesneyi byte'a çevirme |
 | Topic | Mesajların yazıldığı isimli kanal |
 
-## 16. Kendinizi Test Edin
+## 17. Kendinizi Test Edin
 
 Önce cevabı kendiniz düşünün, sonra aşağıdaki cevaplarla karşılaştırın. Parantez içindeki bölüm numarası konunun anlatıldığı yeri gösterir.
 
@@ -640,4 +703,4 @@ docker compose logs -f wallet-service | grep -E "UserConsumer|partitions assigne
 15. wallet-service'in kendi producer ayarı yok; Boot'un varsayılan template'i `StringSerializer` kullanır ve nesneleri yazamaz. Ayrıca bozuk mesajların ham byte'larının olduğu gibi yazılması gerekiyor; `DelegatingByTypeSerializer` değerin tipine göre doğru serializer'ı seçiyor.
 16. Exception yutulur ve error handler hatadan haberdar olmaz. Retry ve DLT çalışmaz, metot başarılı sayılır, offset ilerler ve mesaj kaybolur.
 17. Consumer mesajları üretildikleri hızda işleyemiyor ya da bir mesajda takılmış demektir. wallet-service'in loglarına bakılmalıdır.
-18. Hayır. Mesaj Kafka'ya hiç ulaşmadığı için consumer'ın ve DLT'nin ondan haberi olmaz. Bunun çözümü transactional outbox'tır (#12).
+18. Hayır. Mesaj Kafka'ya hiç ulaşmadığı için consumer'ın ve DLT'nin ondan haberi olmaz. Bunun çözümü transactional outbox'tır: event kullanıcıyla aynı transaction'da `outbox_events`'e yazılır, Kafka açılınca gönderilir (Bölüm 14).

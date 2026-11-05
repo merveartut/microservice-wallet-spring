@@ -1,6 +1,6 @@
 # Değişiklik Kaydı
 
-Bu doküman, 2026-11-02 ve 2026-11-03 tarihlerinde projede yapılan değişiklikleri, nedenlerini ve etkilerini anlatır. Sistemin güncel halinin tam açıklaması için: [Teknik Doküman](teknik-dokuman.md). Açık kalan sorunlar için: [Yapılacaklar](yapilacaklar.md).
+Bu doküman, 2026-11-02 ile 2026-11-05 arasında projede yapılan değişiklikleri, nedenlerini ve etkilerini anlatır. Sistemin güncel halinin tam açıklaması için: [Teknik Doküman](teknik-dokuman.md). Açık kalan sorunlar için: [Yapılacaklar](yapilacaklar.md).
 
 ## Özet
 
@@ -20,9 +20,13 @@ Bu doküman, 2026-11-02 ve 2026-11-03 tarihlerinde projede yapılan değişiklik
 | Hata yönetimi | Global hata altyapısı, RFC 9457 Problem Details (#7, #13, #27) | ✅ Test edildi |
 | Doğrulama | Aynı hesaba transfer engellendi (#10) | ✅ Test edildi |
 | Mesajlaşma | Kafka consumer: retry, DLT, idempotency (#11) | ✅ Test edildi |
+| Tutarlılık | Hesap numarası UUID + unique kısıt (#9) | ✅ Test edildi |
+| Mesajlaşma | Transactional outbox (#12) | ✅ Ayrı ortamda test edildi |
+| Yönetim | ADMIN için tüm hesapları listeleme (`GET /api/account/accounts`) | ✅ Test edildi |
+| Arayüz | React frontend ([wallet-frontend](https://github.com/merveartut/wallet-frontend)) | ✅ Tarayıcıda test edildi |
 | Temizlik | Debug çıktısı ve kullanılmayan alan kaldırıldı (#26, #28) | ✅ |
 
-**#1 ve sonrasındaki değişiklikler henüz commit edilmedi.**
+#1 ve sonrasındaki kod değişiklikleri `20f90ec`, dokümanlar `468f1ab` ile commit edilip pushlandı. Frontend ayrı repoda (`f2f3596`).
 
 ---
 
@@ -305,9 +309,90 @@ Kavramların ve her ayarın ayrıntılı açıklaması: [Kafka Kılavuzu](kafka-
 
 ---
 
-## 9. API Değişiklikleri (İstemciler İçin)
+## 9. Hesap Numarası: UUID ve Unique Kısıt (#9)
 
-### 9.1 Endpoint davranışları
+**Sorun:** Hesap numarası `"ACC-" + System.currentTimeMillis()` ile iki ayrı yerde üretiliyordu (`AccountService`, `UserConsumer`). Aynı milisaniyede açılan iki hesap aynı numarayı alabiliyordu ve veritabanında bunu engelleyen kısıt yoktu.
+
+**Değişiklik:**
+
+- Numara `Account` entity'sinde, kaydedilmeden hemen önce tek yerden üretiliyor:
+
+    ```java
+    @PrePersist
+    void assignAccountNumber() {
+        if (accountNumber == null) {
+            accountNumber = "ACC-" + UUID.randomUUID();
+        }
+    }
+    ```
+
+- `@Column(nullable = false, updatable = false)`: numara açıldıktan sonra değiştirilemez.
+- Kısıt `@Table(uniqueConstraints = @UniqueConstraint(name = "uk_accounts_account_number", ...))` ile tanımlandı. İlk denenen `@Column(unique = true)`, Hibernate 6'nın `ddl-auto=update` modunda var olan tabloya eklenmiyordu; isimli `@UniqueConstraint` ise `ALTER TABLE ... ADD CONSTRAINT` ile ekleniyor.
+- Alan tipi `String` olarak kaldı. `UUID` tipine geçmek, mevcut `varchar` kolonu ve `ACC-<millis>` biçimindeki eski numaralar yüzünden çalışma zamanında hata verirdi.
+
+**Uyumluluk:** Eski `ACC-<millis>` numaralar geçerli kalıyor; iki biçim çakışamaz. `nullable = false` mevcut kolona uygulanmaz; istenirse `ALTER TABLE accounts ALTER COLUMN account_number SET NOT NULL` elle çalıştırılabilir.
+
+---
+
+## 10. Transactional Outbox (#12)
+
+**Sorun:** `UserService.createUser` kullanıcıyı kaydedip Kafka'ya mesaj gönderiyordu; ikisi atomik değildi:
+
+1. Kafka erişilemezse kullanıcı kaydediliyor ama cüzdan açılmıyordu. `kafkaTemplate.send()` asenkron olduğu için çevresindeki `try/catch` hatayı yakalayamıyor, hata sessizce kayboluyordu.
+2. Mesaj transaction commit edilmeden önce gönderildiği için, commit başarısız olursa var olmayan bir kullanıcıya cüzdan açılabiliyordu.
+
+**Değişiklik:**
+
+| Dosya | Değişiklik |
+|---|---|
+| `entity/OutboxEvent.java` (yeni) | `outbox_events` tablosu: topic, key, event tipi, JSON payload, `created_at`, `published_at` |
+| `repository/OutboxEventRepository.java` (yeni) | `lockNextBatch` (`FOR UPDATE SKIP LOCKED`), `deletePublishedBefore` |
+| `messaging/OutboxWriter.java` (yeni) | Event'i kullanıcıyla aynı transaction'da outbox'a yazar (`propagation = MANDATORY`) |
+| `messaging/OutboxPublisher.java` (yeni) | Her saniye bekleyenleri sırayla Kafka'ya gönderir; 7 günden eski gönderilmişleri saatte bir siler |
+| `messaging/UserProducer.java` | Silindi |
+| `service/UserService.java` | `try/catch` + `UserProducer` yerine `outboxWriter.write(...)` |
+| `UserServiceApplication.java` | `@EnableScheduling` |
+| `application.properties` | `value-serializer=StringSerializer`, `acks=all`, `max.block.ms=5000` |
+
+**Tasarım kararları:**
+
+- **At-least-once:** Mesaj gönderilip `published_at` commit edilmeden çökme olursa mesaj tekrar gönderilir. #11'deki idempotent consumer bunu zararsız kılar.
+- **Sıra korunur:** Bir mesaj gönderilemezse döngü durur, sonrakiler atlanmaz.
+- **`max.block.ms=5000`:** Test sırasında Kafka kapalıyken `send()`'in varsayılan olarak 60 sn bloklandığı, bu sürede publisher'ın veritabanı transaction'ını açık tuttuğu görüldü.
+- **Key = `userId`:** Partition sayısı artarsa aynı kullanıcının olayları aynı partition'da sıralı kalır.
+- **Polling, CDC değil:** Debezium gibi CDC çözümleri yerine basit zamanlanmış görev seçildi; gecikme en fazla ~1 sn.
+
+**Wallet tarafı değişmedi:** Mesajın `__TypeId__` header'ı ve JSON biçimi öncekiyle aynı.
+
+---
+
+## 11. ADMIN: Tüm Hesapları Listeleme
+
+**Neden:** Frontend'deki para yatırma ekranında hesap numarasını elle yazmak yerine listeden seçebilmek için.
+
+**Değişiklik:**
+
+- `GET /api/account/accounts` (`AccountController.getAllAccounts`) → `AccountService.getAllAccounts()` (`findAll(Sort.by("id"))`, `readOnly`).
+- `SecurityConfig`: `.requestMatchers(HttpMethod.GET, "/api/account/accounts").hasRole("ADMIN")`. Aynı yoldaki `POST` (hesap açma) etkilenmiyor.
+
+Hesap sahibi `userId` olarak dönüyor; kullanıcı adı user-service'te olduğu için listede yok. Sayfalama yok.
+
+---
+
+## 12. Frontend
+
+Ayrı repo: [merveartut/wallet-frontend](https://github.com/merveartut/wallet-frontend). React 18 + TypeScript + Vite + React Router; giriş/kayıt, hesaplar ve toplamlar, hesap açma, transfer ve ADMIN para yatırma (hesap seçicili) sayfaları. Gateway'e Vite dev proxy ile bağlanır, Problem Details hatalarını form ve alan mesajlarına çevirir. Ayrıntı: frontend README'si.
+
+Frontend testinde bulunan backend sorunları:
+
+- Giriş cevabı (düz metin token), isteğin `Accept` header'ına göre `application/json` etiketiyle dönebiliyor (#20'nin bir sonucu). Frontend iki duruma da dayanıklı yazıldı.
+- Farklı para birimindeki hesaplar arasında kur dönüşümü yapılmadan transfer gerçekleşiyor (#34).
+
+---
+
+## 13. API Değişiklikleri (İstemciler İçin)
+
+### 13.1 Endpoint davranışları
 
 | Endpoint | Önce | Sonra | Uyumluluk |
 |---|---|---|---|
@@ -318,8 +403,10 @@ Kavramların ve her ayarın ayrıntılı açıklaması: [Kafka Kılavuzu](kafka-
 | `POST /api/account/accounts` | `?userId=..&currency=..` | `?currency=..`; `userId` yok sayılır | Geriye uyumlu (davranış değişti) |
 | `POST /api/account/deposit` | Herkes, her hesaba | Yalnızca ADMIN, her hesaba | **Kırıcı** |
 | `POST /api/account/transfer` | Her hesaptan, her tutar | Yalnızca kendi hesabından, tutar > 0, alanlar zorunlu, kaynak ≠ hedef | **Kırıcı** |
+| `GET /api/account/accounts` | Yoktu | Yalnızca ADMIN; tüm hesaplar | Yeni |
+| Hesap numarası biçimi | `ACC-<millis>` | Yeni hesaplarda `ACC-<UUID>` | Geriye uyumlu (string olarak ele alınmalı) |
 
-### 9.2 Hata cevapları — **kırıcı değişiklik**
+### 13.2 Hata cevapları — **kırıcı değişiklik**
 
 Tüm hata cevaplarının gövdesi ve çoğunun durum kodu değişti. Önceden hatalarda boş gövde dönüyordu; artık `application/problem+json` dönüyor.
 
@@ -339,11 +426,11 @@ Tüm hata cevaplarının gövdesi ve çoğunun durum kodu değişti. Önceden ha
 
 ---
 
-## 10. Geçiş Adımları
+## 14. Geçiş Adımları
 
 Bu değişiklikleri çalışan bir ortama uygularken:
 
-1. **İki servisi birlikte derleyin** (`common-security` değişti):
+1. **İki servisi birlikte derleyin** (`common-security` değişti; user-service'te outbox, wallet-service'te UUID ve yeni endpoint var):
     ```bash
     docker compose up -d --build user-service wallet-service
     ```
@@ -353,15 +440,16 @@ Bu değişiklikleri çalışan bir ortama uygularken:
     ```
 3. **En az bir admin oluşturun** ([Teknik Doküman 10.4](teknik-dokuman.md#104-admin-kullanıcı-oluşturma)).
 4. **Tüm kullanıcılar yeniden giriş yapmalı.** Eski token'larda `role` claim'i yok.
-5. **İstemcileri güncelleyin:** Hata ayrımını `errorCode`'a göre yapın; 401 ile 403'ü ayrı ele alın ([9.2](#92-hata-cevapları--kırıcı-değişiklik)).
+5. **Unique kısıtı kontrol edin:** `docker exec wallet-db psql -U postgres -d wallet_db -tAc "select conname from pg_constraint where conrelid='accounts'::regclass"` çıktısında `uk_accounts_account_number` olmalı. Hibernate kısıtı eklerken mevcut veride tekrar eden numara varsa ekleme başarısız olur.
+6. **İstemcileri güncelleyin:** Hata ayrımını `errorCode`'a göre yapın; 401 ile 403'ü ayrı ele alın ([13.2](#132-hata-cevapları--kırıcı-değişiklik)).
 
 ---
 
-## 11. Test Sonuçları
+## 15. Test Sonuçları
 
 2026-11-03'te güncel kodla yeniden derlenmiş sistem üzerinde uçtan uca test yapıldı.
 
-### 11.1 Güvenlik ve iş kuralları
+### 15.1 Güvenlik ve iş kuralları
 
 | # | Senaryo | Beklenen | Sonuç |
 |---|---|---|---|
@@ -378,7 +466,7 @@ Bu değişiklikleri çalışan bir ortama uygularken:
 | 8 | 11.00 bakiyeden paralel 20 × 1.00 transfer | 11 başarılı, 9 red, toplam korunur | ✅ |
 | 8 | Deadlock | Logda yok | ✅ |
 
-### 11.2 Hata cevapları
+### 15.2 Hata cevapları
 
 Tüm hata cevapları `application/problem+json` formatında, `errorCode` ve `timestamp` alanlarıyla döndü.
 
@@ -399,7 +487,7 @@ Tüm hata cevapları `application/problem+json` formatında, `errorCode` ve `tim
 | user-service kapalıyken hesap açma | 500 | `INTERNAL_ERROR`; iç ayrıntı sızmadı, stack trace logda | ✅ |
 | Aynı hesaba transfer (#10) | 400 | `VALIDATION_FAILED`, `errors[0].field = differentAccounts` | ✅ |
 
-### 11.3 Kafka consumer (#11)
+### 15.3 Kafka consumer (#11)
 
 Mesajlar `kafka-console-producer` ile doğrudan topic'e yazıldı.
 
@@ -413,8 +501,38 @@ Mesajlar `kafka-console-producer` ile doğrudan topic'e yazıldı.
 | Hatalı mesajlardan sonra yeni kayıt | Consumer takılmaz, hesap açılır | ✅ |
 | Geçici hata (veritabanı kapalı) → 4 deneme sonra DLT | | Test edilmedi (birkaç dakika sürüyor) |
 
+### 15.4 Hesap numarası (#9) — 2026-11-04
+
+| Senaryo | Sonuç |
+|---|---|
+| Gerçek veritabanının kopyasında açılış: kısıt mevcut tabloya eklendi | ✅ `alter table ... add constraint uk_accounts_account_number` |
+| Aynı numarayla ikinci kayıt | ✅ `duplicate key value violates unique constraint` |
+| Yayındaki sistemde yeni hesap | ✅ `ACC-bc84044d-50de-4797-870e-cf1d71d9c946` |
+
+### 15.5 Outbox (#12) — ayrı PostgreSQL + Kafka ile, 2026-11-04
+
+| Senaryo | Sonuç |
+|---|---|
+| Kafka kapalıyken 2 kayıt | ✅ 200; kullanıcılar kaydedildi, outbox'ta 2 bekleyen satır |
+| Kafka kapalıyken publisher | ✅ ~5 sn'de bir deneme, uyarı logu, bloklanma yok |
+| Kafka açıldı | ✅ Bekleyen 2 mesaj gönderildi, `published_at` dolduruldu |
+| Mesaj biçimi | ✅ `__TypeId__` header'ı, key `userId`, JSON payload |
+| Kafka açıkken kayıt | ✅ 0,6 sn'de gönderildi |
+| Aynı kullanıcı adıyla kayıt (409) | ✅ Outbox'a satır yazılmadı |
+
+user-service'in outbox'lı sürümü bu tarihte yayındaki Docker ortamına henüz derlenmedi (`docker compose up -d --build user-service`).
+
+### 15.6 ADMIN hesap listesi ve frontend — 2026-11-04
+
+| Senaryo | Sonuç |
+|---|---|
+| ADMIN `GET /api/account/accounts` | ✅ 200, tüm hesaplar |
+| USER `GET /api/account/accounts` | ✅ 403 `ACCESS_DENIED` |
+| `POST /api/account/accounts` (hesap açma) etkilenmedi | ✅ |
+| Frontend uçtan uca (Edge headless, 16 senaryo): yönlendirmeler, giriş/kayıt, Kafka ile cüzdan, hesap açma, transfer hataları, ADMIN para yatırma, oturum süresi/401, mobil görünüm | ✅ |
+
 ---
 
-## 12. Açık Kalanlar
+## 16. Açık Kalanlar
 
-Kritik ve yüksek öncelikte açık madde kalmadı. Orta ve düşük öncelikli maddeler ile bu çalışmada ortaya çıkan yeni maddeler (#29–#31, #33) [Yapılacaklar](yapilacaklar.md)'da.
+İki yeni öncelikli madde var: **#35 (kritik)** `.env` ve dolayısıyla `JWT_SECRET` git'te takip ediliyor ve GitHub'da görünüyor; **#34 (yüksek)** farklı para birimleri arasında kur dönüşümsüz transfer. Bunlar ve diğer açık maddeler [Yapılacaklar](yapilacaklar.md)'da.

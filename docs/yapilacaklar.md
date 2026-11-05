@@ -2,18 +2,16 @@
 
 Kod incelemesi ve çalışan sistem üzerinde yapılan testlerle bulunan sorunların listesidir. Öncelik sırasına göre dizilmiştir. Bir madde çözüldüğünde ☐ işaretini ☑ yapın.
 
-**Son güncelleme:** 2026-11-03. Sorunların ayrıntılı açıklaması: [Teknik Doküman — Bölüm 12](teknik-dokuman.md#12-bilinen-sorunlar). Yapılan değişiklikler: [Değişiklik Kaydı](degisiklikler.md).
+**Son güncelleme:** 2026-11-05. Sorunların ayrıntılı açıklaması: [Teknik Doküman — Bölüm 12](teknik-dokuman.md#12-bilinen-sorunlar). Yapılan değişiklikler: [Değişiklik Kaydı](degisiklikler.md).
 
 **Öncelik:** 🔴 Kritik · 🟠 Yüksek · 🟡 Orta · 🟢 Düşük
-
-Kritik ve yüksek öncelikte açık madde yok.
 
 ## Açık
 
 | Durum | # | Öncelik | Sorun | Konum | Önerilen çözüm |
 |---|---|---|---|---|---|
-| ◐ | 9 | 🟡 Orta | Hesap numarası `ACC-<milisaniye>`, aynı milisaniyede çakışabilir. `@Column(unique = true)` eklendi ama Hibernate 6 `ddl-auto=update` tek kolonluk `unique`'i mevcut tabloya eklemiyor; veritabanında kısıt yok | [Account.java:20](../wallet-service/src/main/java/com/wallet/wallet_service/entity/Account.java#L20) | Numara üretimi için UUID veya sequence; kısıt için `@Table(uniqueConstraints = @UniqueConstraint(...))` ya da SQL |
-| ☐ | 12 | 🟡 Orta | Kafka gönderimi DB kaydıyla atomik değil; mesaj gitmezse kullanıcı cüzdansız kalır | [UserService.java:37](../user-service/src/main/java/com/wallet/user_service/service/UserService.java#L37) | Transactional outbox pattern |
+| ☐ | 35 | 🔴 Kritik | `.env` `.gitignore`'da olmasına rağmen git'te takip ediliyor (`729e7ae` ile eklenmiş); `JWT_SECRET` GitHub'da görünüyor. Anahtarı bilen biri istediği kullanıcı/ADMIN adına token üretebilir | [.env](../.env) | `git rm --cached .env` + yeni anahtar üretip servisleri yeniden başlatmak (eski anahtar git geçmişinde kalır) |
+| ☐ | 34 | 🟠 Yüksek | Farklı para birimindeki hesaplar arasında transfer kur dönüşümü yapmıyor: TRY → USD 2,50 gönderilince USD hesabı 2,50 dolar artıyor (frontend testinde bulundu) | [AccountService.java](../wallet-service/src/main/java/com/wallet/wallet_service/service/AccountService.java) `transferMoney` | Para birimleri farklıysa 422 `CURRENCY_MISMATCH` ile reddet; ya da kur servisiyle dönüşüm |
 | ☐ | 14 | 🟡 Orta | Postgres şifreleri compose dosyasında açık metin | [docker-compose.yml:27](../docker-compose.yml#L27), [docker-compose.yml:39](../docker-compose.yml#L39) | `.env`'e taşı (`JWT_SECRET` gibi) |
 | ☐ | 15 | 🟡 Orta | `depends_on` healthcheck beklemiyor; servisler DB/Kafka hazır olmadan açılabiliyor | [docker-compose.yml:83](../docker-compose.yml#L83), [docker-compose.yml:100](../docker-compose.yml#L100) | `healthcheck` + `condition: service_healthy` |
 | ☐ | 16 | 🟡 Orta | Kafka `trusted.packages=*`; her sınıfın deserialize edilmesine izin veriyor | [application.properties:27](../wallet-service/src/main/resources/application.properties#L27) (wallet) | Sadece `com.wallet.user_service.dto`'ya izin ver |
@@ -32,11 +30,12 @@ Kritik ve yüksek öncelikte açık madde yok.
 
 ## Önerilen Sıra
 
-1. **#9 ve #31:** #9 yarım kaldı (kısıt veritabanına uygulanmadı); #31 `transferMoney` içinde birkaç satırlık değişiklik.
-2. **#30:** Hata altyapısının kapsamadığı son boşluk (servisler arası çağrı hataları).
-3. **#14, #15, #17, #18:** Hepsi `docker-compose.yml` içinde, birlikte yapılabilir.
-4. **#24:** Diğer düzeltmelerin bozulmadığından emin olmak için testler.
-5. Diğerleri tablodaki öncelik sırasıyla.
+1. **#35:** Gizli anahtar herkese açık; ilk iş bu.
+2. **#34 ve #31:** İkisi de `transferMoney` içinde, birkaç satırlık değişiklik.
+3. **#30:** Hata altyapısının kapsamadığı son boşluk (servisler arası çağrı hataları).
+4. **#14, #15, #17, #18:** Hepsi `docker-compose.yml` içinde, birlikte yapılabilir.
+5. **#24:** Diğer düzeltmelerin bozulmadığından emin olmak için testler.
+6. Diğerleri tablodaki öncelik sırasıyla.
 
 Satır numaraları bu listenin güncellendiği andaki koda göredir; kod değiştikçe kayabilir.
 
@@ -47,19 +46,21 @@ Satır numaraları bu listenin güncellendiği andaki koda göredir; kod değiş
 | ☑ | — | `JWT_SECRET` container'lara aktarılmıyordu; servisler açılışta çöküyordu | `docker-compose.yml`'e eklendi | `2f5f10d` |
 | ☑ | — | README'de olmayan bir endpoint yazıyordu | `/api/account/user/{userId}` olarak düzeltildi | `8aa90ac` |
 | ☑ | — | API cevapları şifre hash'ini içeriyordu | `@JsonProperty(access = WRITE_ONLY)` | `8c9d2b0` |
-| ☑ | 1 | Transfer'de kaynak hesap sahipliği kontrol edilmiyordu | Serviste `AccessDeniedException` | Commit bekliyor |
-| ☑ | 2 | Transfer'de negatif tutar kabul ediliyordu | Bean Validation + servis kontrolü | Commit bekliyor |
-| ☑ | 3 | Herkes her hesaba para yatırabiliyordu | #6 ile kapsandı (yalnızca ADMIN) | Commit bekliyor |
-| ☑ | 4 | Başkası adına hesap açılabiliyordu | `userId` token'dan alınıyor | Commit bekliyor |
-| ☑ | 5 | Herkes tüm kullanıcıların bilgisini görebiliyordu | Sahiplik kontrolü (DB sorgusundan önce) | Commit bekliyor |
-| ☑ | 6 | Herkes kendine sınırsız para yatırabiliyordu | ADMIN rolü | Commit bekliyor |
-| ☑ | 7 | Tüm hatalar boş 403 dönüyordu | RFC 9457 Problem Details; `GlobalExceptionHandler` + 401/403 yazıcıları | Commit bekliyor |
-| ☑ | 8 | Eşzamanlı transferlerde güncelleme kaybı | Pessimistic lock + sıralı kilitleme | Commit bekliyor |
-| ☑ | 10 | Aynı hesaba transfer kabul ediliyordu | `@AssertTrue` (400 `VALIDATION_FAILED`) + servis kontrolü | Commit bekliyor |
-| ☑ | 11 | Kafka consumer hatada mesajı kaybediyordu; retry/DLT yoktu; idempotent değildi | `DefaultErrorHandler` (3 retry, üstel backoff) + DLT + `ErrorHandlingDeserializer` + `existsByUserId` kontrolü | Commit bekliyor |
-| ☑ | 13 | Aynı kullanıcı adıyla kayıt 500 dönüyordu | Ön kontrol → 409 `USERNAME_ALREADY_EXISTS` | Commit bekliyor |
-| ☑ | 21 | `User.role` kullanılmıyordu | Rol sistemi kuruldu (`USER` / `ADMIN`) | Commit bekliyor |
-| ☑ | 25 | Rol yetkisi filtreden Spring Security'ye aktarılmıyordu | `authorities` authentication nesnesine verildi | Commit bekliyor |
-| ☑ | 26 | Filtre her istekte konsola yazıyordu | Satır kaldırıldı | Commit bekliyor |
-| ☑ | 27 | Hata tipleri tutarsızdı, mesajda yazım hatası | Tipli exception'lar; mesaj düzeltildi | Commit bekliyor |
-| ☑ | 28 | `AccountController`'da kullanılmayan `JwtService` alanı | Alan kaldırıldı | Commit bekliyor |
+| ☑ | 1 | Transfer'de kaynak hesap sahipliği kontrol edilmiyordu | Serviste `AccessDeniedException` | `20f90ec` |
+| ☑ | 2 | Transfer'de negatif tutar kabul ediliyordu | Bean Validation + servis kontrolü | `20f90ec` |
+| ☑ | 3 | Herkes her hesaba para yatırabiliyordu | #6 ile kapsandı (yalnızca ADMIN) | `20f90ec` |
+| ☑ | 4 | Başkası adına hesap açılabiliyordu | `userId` token'dan alınıyor | `20f90ec` |
+| ☑ | 5 | Herkes tüm kullanıcıların bilgisini görebiliyordu | Sahiplik kontrolü (DB sorgusundan önce) | `20f90ec` |
+| ☑ | 6 | Herkes kendine sınırsız para yatırabiliyordu | ADMIN rolü | `20f90ec` |
+| ☑ | 7 | Tüm hatalar boş 403 dönüyordu | RFC 9457 Problem Details; `GlobalExceptionHandler` + 401/403 yazıcıları | `20f90ec` |
+| ☑ | 8 | Eşzamanlı transferlerde güncelleme kaybı | Pessimistic lock + sıralı kilitleme | `20f90ec` |
+| ☑ | 9 | Hesap numarası milisaniyeden üretiliyordu, benzersizlik kısıtı yoktu | `ACC-<UUID>` (`@PrePersist`) + `@Table(uniqueConstraints)` | `20f90ec` |
+| ☑ | 10 | Aynı hesaba transfer kabul ediliyordu | `@AssertTrue` (400 `VALIDATION_FAILED`) + servis kontrolü | `20f90ec` |
+| ☑ | 11 | Kafka consumer hatada mesajı kaybediyordu; retry/DLT yoktu; idempotent değildi | `DefaultErrorHandler` (3 retry, üstel backoff) + DLT + `ErrorHandlingDeserializer` + `existsByUserId` kontrolü | `20f90ec` |
+| ☑ | 12 | Kafka gönderimi kullanıcı kaydıyla atomik değildi | Transactional outbox (`OutboxWriter` + `OutboxPublisher`) | `20f90ec` |
+| ☑ | 13 | Aynı kullanıcı adıyla kayıt 500 dönüyordu | Ön kontrol → 409 `USERNAME_ALREADY_EXISTS` | `20f90ec` |
+| ☑ | 21 | `User.role` kullanılmıyordu | Rol sistemi kuruldu (`USER` / `ADMIN`) | `20f90ec` |
+| ☑ | 25 | Rol yetkisi filtreden Spring Security'ye aktarılmıyordu | `authorities` authentication nesnesine verildi | `20f90ec` |
+| ☑ | 26 | Filtre her istekte konsola yazıyordu | Satır kaldırıldı | `20f90ec` |
+| ☑ | 27 | Hata tipleri tutarsızdı, mesajda yazım hatası | Tipli exception'lar; mesaj düzeltildi | `20f90ec` |
+| ☑ | 28 | `AccountController`'da kullanılmayan `JwtService` alanı | Alan kaldırıldı | `20f90ec` |

@@ -8,6 +8,12 @@ Java 21, Spring Boot 3.2.4 ve Spring Cloud kullanılarak geliştirilmiş dijital
 - **Wallet Service:** Hesap ve transfer yönetimi.
 - **Common Security:** Her iki serviste kullanılmak üzere ortak security filter ve Jwt service içeren bir Maven modulü.
 - **Event Bus:** Kafka ile servisler arası asenkron iletişim
+- **Frontend:** React + TypeScript arayüzü ayrı repoda: [merveartut/wallet-frontend](https://github.com/merveartut/wallet-frontend)
+
+## 📚 Dokümantasyon
+- [Teknik Doküman](docs/teknik-dokuman.md): mimari, güvenlik, Kafka akışı, veri modeli, tüm endpoint'ler
+- [Kafka Kılavuzu](docs/kafka-kilavuzu.md) ([PDF](docs/kafka-kilavuzu.pdf)): Kafka'ya yeni başlayanlar için; retry, DLT, idempotency ve outbox
+- [Değişiklik Kaydı](docs/degisiklikler.md) · [Yapılacaklar](docs/yapilacaklar.md)
 
 ## 🚀 Nasıl Çalıştırabilirsin
 1. Docker Desktop'ı başlatın.
