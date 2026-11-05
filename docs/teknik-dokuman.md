@@ -117,7 +117,8 @@ Proje, kök dizindeki `pom.xml`'de tanımlı bir Maven multi-module projesidir:
 microservice-wallet-spring/
 ├── pom.xml                 # Parent POM (sürüm yönetimi)
 ├── docker-compose.yml
-├── .env                    # JWT_SECRET (git'e girmemeli; şu an takip ediliyor, bkz. #35)
+├── .env                    # JWT_SECRET (git'e girmez)
+├── .env.example            # .env şablonu (gizli değer içermez)
 ├── docs/                   # Teknik doküman, değişiklik kaydı, yapılacaklar, Kafka kılavuzu
 ├── common-security/        # Ortak kütüphane: JWT + hata yönetimi (çalıştırılabilir değil)
 ├── service-registry/       # Eureka Server
@@ -826,7 +827,7 @@ IntelliJ'de projeyi açarken SDK ve language level olarak **21** seçilmelidir.
 
 ### 10.2 Ortam Değişkeni
 
-Kök dizine `.env` dosyası oluşturun. Bu dosya git'e eklenmemelidir; `.gitignore`'da olmasına rağmen eski bir commit'te eklendiği için şu an takip ediliyor (bkz. #35):
+Şablondan `.env` dosyası oluşturun (`cp .env.example .env`) ve anahtarı doldurun. `.env` `.gitignore`'dadır; gerçek anahtarı asla commit etmeyin:
 
 ```dotenv
 JWT_SECRET=<base64 kodlu, en az 32 byte'lık rastgele anahtar>
@@ -835,8 +836,10 @@ JWT_SECRET=<base64 kodlu, en az 32 byte'lık rastgele anahtar>
 Anahtar üretmek için:
 
 ```bash
-openssl rand -base64 32
+openssl rand -base64 48
 ```
+
+**Anahtarı değiştirmek (rotation):** `.env`'deki değeri değiştirip `docker compose up -d user-service wallet-service` çalıştırın (değişen ortam değişkeni container'ların yeniden oluşturulmasını sağlar). Eski anahtarla imzalanmış tüm token'lar geçersiz olur; kullanıcılar yeniden giriş yapar. Anahtar sızdığından şüphelenildiğinde bu yapılmalıdır.
 
 ### 10.3 Başlatma
 
@@ -961,11 +964,10 @@ user-service, Kafka adresini properties dosyasında sabit olarak `kafka:9092` ş
 
 Bu bölüm, kodun 2026-11-05 tarihli haline ve çalışan sistem üzerinde yapılan testlere dayanır. Takip listesi için: [Yapılacaklar](yapilacaklar.md).
 
-### 12.1 Açık — Kritik ve Yüksek
+### 12.1 Açık — Yüksek
 
 | # | Öncelik | Sorun | Çözüm |
 |---|---|---|---|
-| 35 | 🔴 Kritik | `.env` `.gitignore`'da olmasına rağmen git tarafından takip ediliyor (`729e7ae`); `JWT_SECRET` GitHub'daki repoda görünüyor. Anahtarı bilen biri istediği kullanıcı ve ADMIN rolüyle geçerli token üretebilir. | `git rm --cached .env` ile takipten çıkarmak **ve** anahtarı değiştirmek (eski anahtar git geçmişinde kalır). |
 | 34 | 🟠 Yüksek | Farklı para birimindeki hesaplar arasında transfer kur dönüşümü yapmadan gerçekleşiyor: TRY hesabından USD hesabına 2,50 gönderilince USD hesabı 2,50 dolar artıyor. | Farklı para birimleri arasında transferi reddetmek (`BusinessRuleException`, 422) veya kur dönüşümü eklemek. |
 
 ### 12.2 Açık — Orta
@@ -994,4 +996,4 @@ Bu bölüm, kodun 2026-11-05 tarihli haline ve çalışan sistem üzerinde yapı
 
 ### 12.4 Çözülenler
 
-[Değişiklik Kaydı](degisiklikler.md)'nda ayrıntılı olarak listelenmiştir: #1–#13, #21, #25–#28.
+[Değişiklik Kaydı](degisiklikler.md)'nda ayrıntılı olarak listelenmiştir: #1–#13, #21, #25–#28, #35.

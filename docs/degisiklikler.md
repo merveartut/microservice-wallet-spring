@@ -7,6 +7,7 @@ Bu doküman, 2026-11-02 ile 2026-11-05 arasında projede yapılan değişiklikle
 | Alan | Değişiklik | Durum |
 |---|---|---|
 | Altyapı | `JWT_SECRET` container'lara aktarıldı | ✅ Commit edildi (`2f5f10d`) |
+| Güvenlik | `.env` git'ten çıkarıldı, `JWT_SECRET` değiştirildi (#35) | ✅ Test edildi |
 | Dokümantasyon | README'deki yanlış endpoint düzeltildi | ✅ Commit edildi (`8aa90ac`) |
 | Güvenlik | API cevaplarından şifre hash'i kaldırıldı | ✅ Commit edildi (`8c9d2b0`) |
 | Güvenlik | Transfer'de kaynak hesap sahipliği kontrolü (#1) | ✅ Test edildi |
@@ -53,6 +54,31 @@ Projeyi çalıştırmak ve geliştirmek için kurulan araçlar (macOS, Homebrew)
 | Maven | 3.10.0 | Yerel build |
 | IntelliJ IDEA | 2026.2.4 | SDK ve language level: 21 |
 | GitHub CLI | 2.103.3 | Push için kimlik doğrulama |
+
+---
+
+### 1.3 Sızan `JWT_SECRET`: `.env` git'ten çıkarıldı, anahtar değiştirildi (#35) — 2026-11-05
+
+**Sorun:** `.env` dosyası `.gitignore`'da olmasına rağmen `729e7ae` commit'iyle repoya eklenmişti. `.gitignore` yalnızca henüz takip edilmeyen dosyaları etkilediği için dosya takip edilmeye devam ediyordu ve `JWT_SECRET` GitHub'daki repoda görünüyordu. Bu anahtarı bilen biri, istediği `userId` ve `ADMIN` rolüyle geçerli bir token imzalayıp örneğin her hesaba para yatırabilirdi.
+
+**Değişiklik:**
+
+1. **Anahtar değiştirildi (asıl koruma).** `openssl rand -base64 48` ile yeni anahtar üretildi, `.env`'e yazıldı (dosya izni `600`), user-service ve wallet-service yeni anahtarla yeniden oluşturuldu.
+2. **`.env` takipten çıkarıldı:** `git rm --cached .env`. Dosya diskte duruyor; artık commit'lere girmiyor.
+3. **`.env.example` eklendi:** Gizli değer içermeyen şablon; kurulumda `cp .env.example .env`.
+
+**Git geçmişi:** Eski anahtar `729e7ae` ve sonrasındaki commit'lerin geçmişinde hâlâ okunabilir. Anahtar değiştirildiği için bu artık bir risk değil: eski anahtarla imzalanmış token'ları servisler reddediyor. Geçmişi yeniden yazmak (`git filter-repo` + force push) bu yüzden gerekmedi; o işlem tüm commit hash'lerini değiştirir ve repoyu klonlamış herkesi etkiler.
+
+**Etkisi:** Değişiklik anında verilmiş tüm token'lar geçersiz oldu; kullanıcılar yeniden giriş yapmalı. Frontend 401 alınca oturumu kapatıp giriş sayfasına yönlendiriyor.
+
+**Test:**
+
+| Senaryo | Sonuç |
+|---|---|
+| İki container'daki `JWT_SECRET`, yeni `.env` ile aynı (hash karşılaştırması) | ✅ |
+| Yeni token → wallet-service / user-service | ✅ 200 / 200 |
+| Eski anahtarla alınmış token → wallet-service / user-service | ✅ 401 `UNAUTHORIZED` / 401 |
+| `.env` git tarafından yok sayılıyor (`git check-ignore`) | ✅ |
 
 ---
 
@@ -535,4 +561,4 @@ user-service'in outbox'lı sürümü bu tarihte yayındaki Docker ortamına hen�
 
 ## 16. Açık Kalanlar
 
-İki yeni öncelikli madde var: **#35 (kritik)** `.env` ve dolayısıyla `JWT_SECRET` git'te takip ediliyor ve GitHub'da görünüyor; **#34 (yüksek)** farklı para birimleri arasında kur dönüşümsüz transfer. Bunlar ve diğer açık maddeler [Yapılacaklar](yapilacaklar.md)'da.
+Kritik açık madde yok (#35 çözüldü, bkz. [1.3](#13-sızan-jwt_secret-env-gitten-çıkarıldı-anahtar-değiştirildi-35--2026-11-05)). Yüksek öncelikte bir madde var: **#34** farklı para birimleri arasında kur dönüşümsüz transfer. Bunlar ve diğer açık maddeler [Yapılacaklar](yapilacaklar.md)'da.

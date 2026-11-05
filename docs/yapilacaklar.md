@@ -10,7 +10,6 @@ Kod incelemesi ve çalışan sistem üzerinde yapılan testlerle bulunan sorunla
 
 | Durum | # | Öncelik | Sorun | Konum | Önerilen çözüm |
 |---|---|---|---|---|---|
-| ☐ | 35 | 🔴 Kritik | `.env` `.gitignore`'da olmasına rağmen git'te takip ediliyor (`729e7ae` ile eklenmiş); `JWT_SECRET` GitHub'da görünüyor. Anahtarı bilen biri istediği kullanıcı/ADMIN adına token üretebilir | [.env](../.env) | `git rm --cached .env` + yeni anahtar üretip servisleri yeniden başlatmak (eski anahtar git geçmişinde kalır) |
 | ☐ | 34 | 🟠 Yüksek | Farklı para birimindeki hesaplar arasında transfer kur dönüşümü yapmıyor: TRY → USD 2,50 gönderilince USD hesabı 2,50 dolar artıyor (frontend testinde bulundu) | [AccountService.java](../wallet-service/src/main/java/com/wallet/wallet_service/service/AccountService.java) `transferMoney` | Para birimleri farklıysa 422 `CURRENCY_MISMATCH` ile reddet; ya da kur servisiyle dönüşüm |
 | ☐ | 14 | 🟡 Orta | Postgres şifreleri compose dosyasında açık metin | [docker-compose.yml:27](../docker-compose.yml#L27), [docker-compose.yml:39](../docker-compose.yml#L39) | `.env`'e taşı (`JWT_SECRET` gibi) |
 | ☐ | 15 | 🟡 Orta | `depends_on` healthcheck beklemiyor; servisler DB/Kafka hazır olmadan açılabiliyor | [docker-compose.yml:83](../docker-compose.yml#L83), [docker-compose.yml:100](../docker-compose.yml#L100) | `healthcheck` + `condition: service_healthy` |
@@ -30,12 +29,11 @@ Kod incelemesi ve çalışan sistem üzerinde yapılan testlerle bulunan sorunla
 
 ## Önerilen Sıra
 
-1. **#35:** Gizli anahtar herkese açık; ilk iş bu.
-2. **#34 ve #31:** İkisi de `transferMoney` içinde, birkaç satırlık değişiklik.
-3. **#30:** Hata altyapısının kapsamadığı son boşluk (servisler arası çağrı hataları).
-4. **#14, #15, #17, #18:** Hepsi `docker-compose.yml` içinde, birlikte yapılabilir.
-5. **#24:** Diğer düzeltmelerin bozulmadığından emin olmak için testler.
-6. Diğerleri tablodaki öncelik sırasıyla.
+1. **#34 ve #31:** İkisi de `transferMoney` içinde, birkaç satırlık değişiklik.
+2. **#30:** Hata altyapısının kapsamadığı son boşluk (servisler arası çağrı hataları).
+3. **#14, #15, #17, #18:** Hepsi `docker-compose.yml` içinde, birlikte yapılabilir.
+4. **#24:** Diğer düzeltmelerin bozulmadığından emin olmak için testler.
+5. Diğerleri tablodaki öncelik sırasıyla.
 
 Satır numaraları bu listenin güncellendiği andaki koda göredir; kod değiştikçe kayabilir.
 
@@ -43,6 +41,7 @@ Satır numaraları bu listenin güncellendiği andaki koda göredir; kod değiş
 
 | Durum | # | Sorun | Çözüm | Commit |
 |---|---|---|---|---|
+| ☑ | 35 | `.env` git'te takip ediliyordu; `JWT_SECRET` GitHub'da açıktaydı | `.env` takipten çıkarıldı, `.env.example` eklendi, anahtar değiştirildi (eskisi geçersiz) | Bu commit |
 | ☑ | — | `JWT_SECRET` container'lara aktarılmıyordu; servisler açılışta çöküyordu | `docker-compose.yml`'e eklendi | `2f5f10d` |
 | ☑ | — | README'de olmayan bir endpoint yazıyordu | `/api/account/user/{userId}` olarak düzeltildi | `8aa90ac` |
 | ☑ | — | API cevapları şifre hash'ini içeriyordu | `@JsonProperty(access = WRITE_ONLY)` | `8c9d2b0` |

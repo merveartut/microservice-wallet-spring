@@ -17,8 +17,9 @@ Java 21, Spring Boot 3.2.4 ve Spring Cloud kullanılarak geliştirilmiş dijital
 
 ## 🚀 Nasıl Çalıştırabilirsin
 1. Docker Desktop'ı başlatın.
-2. `docker-compose up -d --build`
-3. **Servis Durumu:** Eureka Dashboard üzerinden (http://localhost:8761) tüm servislerin UP olduğunu teyit edin.
+2. Ortam dosyasını oluşturun: `cp .env.example .env`, ardından `JWT_SECRET` değerini `openssl rand -base64 48` çıktısıyla doldurun. (`.env` git'e eklenmez.)
+3. `docker-compose up -d --build`
+4. **Servis Durumu:** Eureka Dashboard üzerinden (http://localhost:8761) tüm servislerin UP olduğunu teyit edin.
 
 <img width="1641" height="236" alt="image" src="https://github.com/user-attachments/assets/c9faf208-e549-49d3-a407-3661d9ac8f15" />
 
